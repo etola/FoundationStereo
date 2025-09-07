@@ -26,7 +26,7 @@ from colmap_utils import ColmapReconstruction
 
 
 def compute_stereo_rectification(reconstruction: ColmapReconstruction, 
-                                img1_id: int, img2_id: int) -> Dict[str, Any]:
+                                img1_id: int, img2_id: int, images_path: Path, output_dir: Path) -> Dict[str, Any]:
     """
     Compute stereo rectification parameters for two images.
     
@@ -75,11 +75,18 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
         flags=cv2.CALIB_ZERO_DISPARITY, alpha=0
     )
 
+    img1_name = reconstruction.get_image_name(img1_id)
+    img2_name = reconstruction.get_image_name(img2_id)
+
     rect_info = {
         'img1_id': img1_id,
         'img2_id': img2_id,
-        'img1_name': reconstruction.get_image_name(img1_id),
-        'img2_name': reconstruction.get_image_name(img2_id),
+        'img1_name': img1_name,
+        'img2_name': img2_name,
+        'img1_path': str(images_path / img1_name),
+        'img2_path': str(images_path / img2_name),
+        'rect1_path': os.path.join(output_dir, f"{Path(img1_name).stem}_rectified.jpg"),
+        'rect2_path': os.path.join(output_dir, f"{Path(img2_name).stem}_rectified.jpg"),
         'K1': K1.tolist(),
         'K2': K2.tolist(),
         'dist1': dist1.tolist(),
@@ -656,18 +663,18 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     
     return coords_orig
 
-def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int) -> Dict[str, Any]:
-    rect_info = compute_stereo_rectification(reconstruction, img1_id, img2_id)
+def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, images_path: Path, output_dir: Path) -> Dict[str, Any]:
+    rect_info = compute_stereo_rectification(reconstruction, img1_id, img2_id, images_path, output_dir)
     if rect_info['type'] == 'vertical':
         if rect_info['top'] == rect_info['img1_id'] and rect_info['bottom'] == rect_info['img2_id']:
             return rect_info
         else:
-            return compute_stereo_rectification(reconstruction, img2_id, img1_id)
+            return compute_stereo_rectification(reconstruction, img2_id, img1_id, images_path, output_dir)
     elif rect_info['type'] == 'horizontal':
         if rect_info['left'] == rect_info['img1_id'] and rect_info['right'] == rect_info['img2_id']:
             return rect_info
         else:
-            return compute_stereo_rectification(reconstruction, img2_id, img1_id)
+            return compute_stereo_rectification(reconstruction, img2_id, img1_id, images_path, output_dir)
     else:
         raise ValueError(f"Invalid rectification type: {rect_info['type']}")
 
@@ -721,12 +728,8 @@ def main():
         print(f"Error: Image ID {args.img_id2} not found in reconstruction")
         sys.exit(1)
     
-    rect_info = initalize_rectification(reconstruction, args.img_id1, args.img_id2)
-
-    # Get image names
-    img1_name = rect_info['img1_name']
-    img2_name = rect_info['img2_name']
-    print(f"Processing images: {img1_name} (ID: {rect_info['img1_id']}) and {img2_name} (ID: {rect_info['img2_id']})")
+    rect_info = initalize_rectification(reconstruction, args.img_id1, args.img_id2, images_path, output_dir)
+    print(f"Processing images: {rect_info['img1_name']} (ID: {rect_info['img1_id']}) and {rect_info['img2_name']} (ID: {rect_info['img2_id']})")
     
     print(f"Rectification type: {rect_info['type']}")
     if rect_info['type'] == 'vertical':
@@ -735,15 +738,6 @@ def main():
     elif rect_info['type'] == 'horizontal':
         print(f"Left image: {rect_info['left']}")
         print(f"Right image: {rect_info['right']}")
-
-    img1_name = rect_info['img1_name']
-    img2_name = rect_info['img2_name']
-
-    rect_info['img1_path'] = str(images_path / img1_name)
-    rect_info['img2_path'] = str(images_path / img2_name)
-
-    rect_info['rect1_path'] = os.path.join(output_dir, f"{Path(img1_name).stem}_rectified.jpg")
-    rect_info['rect2_path'] = os.path.join(output_dir, f"{Path(img2_name).stem}_rectified.jpg")
 
     # Rectify images
     print("Rectifying images...")

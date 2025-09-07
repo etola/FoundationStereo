@@ -526,25 +526,14 @@ def main():
     print("Computing stereo rectification parameters...")
     try:
         from rectify_stereo import initalize_rectification, rectify_images
-        rect_params = initalize_rectification(reconstruction, args.img_id1, args.img_id2)
+        rect_params = initalize_rectification(reconstruction, args.img_id1, args.img_id2, images_path, output_dir)
     except Exception as e:
         print(f"Error computing rectification: {e}")
         sys.exit(1)
 
-    img1_name = rect_params['img1_name']
-    img2_name = rect_params['img2_name']
-
-    rect_params['img1_path'] = str(images_path / img1_name)
-    rect_params['img2_path'] = str(images_path / img2_name)
-
-    rect_params['rect1_path'] = os.path.join(output_dir, f"{Path(img1_name).stem}_rectified.jpg")
-    rect_params['rect2_path'] = os.path.join(output_dir, f"{Path(img2_name).stem}_rectified.jpg")
-
     # Rectify images
     print("Rectifying images...")
     try:
-        img1_path = rect_params['img1_path']
-        img2_path = rect_params['img2_path']
         rect1_img, rect2_img = rectify_images(rect_params)
         cv2.imwrite(rect_params['rect1_path'], rect1_img)
         cv2.imwrite(rect_params['rect2_path'], rect2_img)
