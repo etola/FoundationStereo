@@ -21,7 +21,6 @@ from core.foundation_stereo import *
 def process_stereo_pair(left_file, right_file, intrinsic_file, out_dir, model, args):
   """Process a single stereo pair and save results to out_dir"""
   os.makedirs(out_dir, exist_ok=True)
-  
   img0 = imageio.imread(left_file)
   img1 = imageio.imread(right_file)
   scale = args.scale
@@ -177,7 +176,7 @@ if __name__=="__main__":
 
   model = FoundationStereo(args)
 
-  ckpt = torch.load(ckpt_dir)
+  ckpt = torch.load(ckpt_dir, weights_only=False)
   logging.info(f"ckpt global_step:{ckpt['global_step']}, epoch:{ckpt['epoch']}")
   model.load_state_dict(ckpt['model'])
 
