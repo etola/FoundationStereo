@@ -107,6 +107,10 @@ def process_stereo_pair_with_foundation_stereo(
     right_scaled = cv2.resize(right_image, None, fx=scale, fy=scale)
     H_scaled, W_scaled = left_scaled.shape[:2]
     
+    # Convert BGR to RGB for FoundationStereo model
+    left_scaled = cv2.cvtColor(left_scaled, cv2.COLOR_BGR2RGB)
+    right_scaled = cv2.cvtColor(right_scaled, cv2.COLOR_BGR2RGB)
+    
     # Convert to tensors
     left_tensor = torch.as_tensor(left_scaled).cuda().float()[None].permute(0, 3, 1, 2)
     right_tensor = torch.as_tensor(right_scaled).cuda().float()[None].permute(0, 3, 1, 2)
@@ -277,7 +281,10 @@ def compute_point_cloud_from_matching_coords(
     
     # Extract colors for valid coordinates
     if np.any(valid_coords_mask):
-        colors[valid_coords_mask] = left_image[y_coords[valid_coords_mask], x_coords[valid_coords_mask]]
+        bgr_colors = left_image[y_coords[valid_coords_mask], x_coords[valid_coords_mask]]
+        # Convert BGR to RGB
+        rgb_colors = bgr_colors[:, [2, 1, 0]]  # Reverse the channel order
+        colors[valid_coords_mask] = rgb_colors
     
     if len(points_3d) == 0:
         return o3d.geometry.PointCloud()
@@ -455,6 +462,7 @@ def process_single_pair(
             json.dump(rect_info, f, indent=2)
         
         logging.info(f"Successfully processed pair {img1_id}-{img2_id}")
+        return True
         
     except Exception as e:
         logging.error(f"Failed to process pair {img1_id}-{img2_id}: {str(e)}")
@@ -560,11 +568,6 @@ def main():
         success = process_single_pair(
             reconstruction, img1_id, img2_id, pair_output_dir, model, args
         )
-        
-        # For quick testing, process only the first pair
-        if i == 0:
-            logging.info("Quick test mode: processing only the first pair")
-            break
         
         if success:
             successful_pairs += 1
