@@ -7,6 +7,7 @@ in the rectify_stereo.py module, including debug functionality for marking coord
 on images.
 """
 
+import os
 import numpy as np
 import cv2
 import argparse
@@ -51,18 +52,13 @@ def mark_coordinate_on_image(image_path: str, x: float, y: float, output_path: s
 
 
 def run_debug_tests(rect_params: Dict[str, Any], 
-                   img1_path: str, img2_path: str,
-                   img1_name: str, img2_name: str,
                    output_dir: Path,
-                   rect1_path: str, rect2_path: str,
                    x0: float, y0: float, x1: float, y1: float) -> bool:
     """
     Run debug tests with coordinate marking and comprehensive validation.
     
     Args:
         rect_params: Rectification parameters
-        img1_path, img2_path: Paths to original images
-        img1_name, img2_name: Names of the images
         output_dir: Output directory for marked images
         x0, y0: Coordinates in first image
         x1, y1: Coordinates in second image
@@ -76,7 +72,14 @@ def run_debug_tests(rect_params: Dict[str, Any],
     )
     
     print(f"\nDebug mode: Marking coordinates ({x0}, {y0}) and ({x1}, {y1})")
-    
+
+    img1_name = rect_params['img1_name']
+    img2_name = rect_params['img2_name']
+    img1_path = rect_params['img1_path']
+    img2_path = rect_params['img2_path']
+    rect1_path = rect_params['rect1_path']
+    rect2_path = rect_params['rect2_path']
+
     # Mark original coordinates
     img1_marked_path = output_dir / f"{Path(img1_name).stem}_marked_original.jpg"
     img2_marked_path = output_dir / f"{Path(img2_name).stem}_marked_original.jpg"
@@ -515,10 +518,6 @@ def main():
         sys.exit(1)
     
     # Get image names
-    img1_name = reconstruction.get_image_name(args.img_id1)
-    img2_name = reconstruction.get_image_name(args.img_id2)
-    print(f"Processing images: {img1_name} (ID: {args.img_id1}) and {img2_name} (ID: {args.img_id2})")
-    
     # Create output directory
     output_dir = scene_folder / args.out_folder
     output_dir.mkdir(exist_ok=True)
@@ -526,20 +525,29 @@ def main():
     # Compute stereo rectification parameters
     print("Computing stereo rectification parameters...")
     try:
-        from rectify_stereo import compute_stereo_rectification, rectify_images
-        rect_params = compute_stereo_rectification(reconstruction, args.img_id1, args.img_id2)
+        from rectify_stereo import initalize_rectification, rectify_images
+        rect_params = initalize_rectification(reconstruction, args.img_id1, args.img_id2)
     except Exception as e:
         print(f"Error computing rectification: {e}")
         sys.exit(1)
-    
+
+    img1_name = rect_params['img1_name']
+    img2_name = rect_params['img2_name']
+
+    rect_params['img1_path'] = str(images_path / img1_name)
+    rect_params['img2_path'] = str(images_path / img2_name)
+
+    rect_params['rect1_path'] = os.path.join(output_dir, f"{Path(img1_name).stem}_rectified.jpg")
+    rect_params['rect2_path'] = os.path.join(output_dir, f"{Path(img2_name).stem}_rectified.jpg")
+
     # Rectify images
     print("Rectifying images...")
     try:
-        img1_path = images_path / img1_name
-        img2_path = images_path / img2_name
-        rect1_path, rect2_path = rectify_images(
-            str(img1_path), str(img2_path), rect_params, str(output_dir)
-        )
+        img1_path = rect_params['img1_path']
+        img2_path = rect_params['img2_path']
+        rect1_img, rect2_img = rectify_images(rect_params)
+        cv2.imwrite(rect_params['rect1_path'], rect1_img)
+        cv2.imwrite(rect_params['rect2_path'], rect2_img)
     except Exception as e:
         print(f"Error rectifying images: {e}")
         sys.exit(1)
@@ -548,22 +556,10 @@ def main():
         # Debug mode: run tests with coordinate marking
         x0, y0, x1, y1 = args.debug
         
-        # Get image paths
-        img1_path = images_path / img1_name
-        img2_path = images_path / img2_name
-        
-        if not img1_path.exists():
-            print(f"Error: Image {img1_path} does not exist")
-            sys.exit(1)
-        if not img2_path.exists():
-            print(f"Error: Image {img2_path} does not exist")
-            sys.exit(1)
-        
         # Run debug tests
         success = run_debug_tests(
-            rect_params, str(img1_path), str(img2_path),
-            img1_name, img2_name, output_dir,
-            rect1_path, rect2_path,
+            rect_params, 
+            output_dir,
             x0, y0, x1, y1
         )
         

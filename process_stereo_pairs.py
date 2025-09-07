@@ -33,7 +33,7 @@ from colmap_utils import ColmapReconstruction
 from rectify_stereo import (
     compute_stereo_rectification, 
     rectify_images,
-    check_rectification_type_and_order,
+    determine_rectification_type,
     transform_coordinates_from_rectified_vectorized
 )
 from core.utils.utils import InputPadder
@@ -326,10 +326,8 @@ def process_single_pair(
         # Compute stereo rectification
         rect_params = compute_stereo_rectification(reconstruction, img1_id, img2_id)
         
-        # Get rectification type and order
-        rect_type, top_image, bottom_image, left_image, right_image = check_rectification_type_and_order(
-            rect_params, img1_name, img2_name
-        )
+        # Get rectification type and update rect_params with image IDs
+        rect_type = determine_rectification_type(rect_params, img1_id, img2_id)
         
         logging.info(f"Rectification type: {rect_type}")
         
@@ -452,11 +450,11 @@ def process_single_pair(
         }
         
         if rect_type == 'vertical':
-            rect_info['top'] = top_image
-            rect_info['bottom'] = bottom_image
+            rect_info['top'] = reconstruction.get_image_name(rect_params['top'])
+            rect_info['bottom'] = reconstruction.get_image_name(rect_params['bottom'])
         else:
-            rect_info['left'] = left_image
-            rect_info['right'] = right_image
+            rect_info['left'] = reconstruction.get_image_name(rect_params['left'])
+            rect_info['right'] = reconstruction.get_image_name(rect_params['right'])
         
         with open(output_dir / 'rectification.json', 'w') as f:
             json.dump(rect_info, f, indent=2)

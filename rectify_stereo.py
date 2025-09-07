@@ -74,8 +74,12 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
         K1, dist1, K2, dist2, image_size, R_rel, t_rel,
         flags=cv2.CALIB_ZERO_DISPARITY, alpha=0
     )
-    
-    return {
+
+    rect_info = {
+        'img1_id': img1_id,
+        'img2_id': img2_id,
+        'img1_name': reconstruction.get_image_name(img1_id),
+        'img2_name': reconstruction.get_image_name(img2_id),
         'K1': K1.tolist(),
         'K2': K2.tolist(),
         'dist1': dist1.tolist(),
@@ -96,19 +100,18 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
         'roi1': roi1,
         'roi2': roi2
     }
+    determine_rectification_type(rect_info)
+    return rect_info
 
-
-def check_rectification_type_and_order(rect_params: Dict[str, Any], img1_name: str, img2_name: str) -> Tuple[str, str, str, str, str]:
+def determine_rectification_type(rect_params: Dict[str, Any]) -> None:
     """
-    Check if rectification is horizontal or vertical and determine spatial order.
+    Determine if rectification is horizontal or vertical and update rect_params with image IDs.
     
     Args:
-        rect_params: Rectification parameters dictionary
-        img1_name: Name of first image
-        img2_name: Name of second image
+        rect_params: Rectification parameters dictionary (will be modified)
         
     Returns:
-        Tuple of (rectification_type, top_image_name, bottom_image_name, left_image_name, right_image_name)
+        Rectification type: 'horizontal' or 'vertical'
     """
     # Extract rectified projection matrices
     P1 = np.array(rect_params['P1'])
@@ -143,7 +146,15 @@ def check_rectification_type_and_order(rect_params: Dict[str, Any], img1_name: s
     # Check the structure of the fundamental matrix
     # For horizontal rectification: F[1,2] = -1, F[2,1] = 1, others ≈ 0
     # For vertical rectification: F[0,2] = 1, F[2,0] = -1, others ≈ 0
-    
+
+    rect_params['left'] = None
+    rect_params['right'] = None
+    rect_params['top'] = None
+    rect_params['bottom'] = None
+
+    img1_id = rect_params['img1_id']
+    img2_id = rect_params['img2_id']
+
     # Check horizontal rectification
     if abs(F[1, 2] + 1) < 0.1 and abs(F[2, 1] - 1) < 0.1:
         # For horizontal rectification, determine which camera is left/right
@@ -154,14 +165,13 @@ def check_rectification_type_and_order(rect_params: Dict[str, Any], img1_name: s
         # If t_rel[0] < 0, camera 1 is to the right of camera 2
         if t_rel[0] > 0:
             # Camera 1 is left, camera 2 is right
-            left_name = f"{Path(img1_name).stem}_rectified.jpg"
-            right_name = f"{Path(img2_name).stem}_rectified.jpg"
+            rect_params['left'] = img1_id
+            rect_params['right'] = img2_id
         else:
             # Camera 2 is left, camera 1 is right
-            left_name = f"{Path(img2_name).stem}_rectified.jpg"
-            right_name = f"{Path(img1_name).stem}_rectified.jpg"
-        
-        return 'horizontal', '', '', left_name, right_name
+            rect_params['left'] = img2_id
+            rect_params['right'] = img1_id
+        rect_params['type'] = 'horizontal'
     # Check vertical rectification  
     elif abs(F[0, 2] - 1) < 0.1 and abs(F[2, 0] + 1) < 0.1:
         # For vertical rectification, determine which camera is higher
@@ -172,14 +182,13 @@ def check_rectification_type_and_order(rect_params: Dict[str, Any], img1_name: s
         # If t_rel[1] < 0, camera 1 is higher than camera 2
         if t_rel[1] > 0:
             # Camera 2 is higher (top), camera 1 is lower (bottom)
-            top_name = f"{Path(img2_name).stem}_rectified.jpg"
-            bottom_name = f"{Path(img1_name).stem}_rectified.jpg"
+            rect_params['top'] = img2_id
+            rect_params['bottom'] = img1_id
         else:
             # Camera 1 is higher (top), camera 2 is lower (bottom)
-            top_name = f"{Path(img1_name).stem}_rectified.jpg"
-            bottom_name = f"{Path(img2_name).stem}_rectified.jpg"
-        
-        return 'vertical', top_name, bottom_name, '', ''
+            rect_params['top'] = img1_id
+            rect_params['bottom'] = img2_id
+        rect_params['type'] = 'vertical'
     else:
         # Fallback: check which direction has the largest off-diagonal elements
         horizontal_strength = abs(F[1, 2]) + abs(F[2, 1])
@@ -189,46 +198,42 @@ def check_rectification_type_and_order(rect_params: Dict[str, Any], img1_name: s
             # Horizontal fallback
             t_rel = np.array(rect_params['t_rel'])
             if t_rel[0] > 0:
-                left_name = f"{Path(img1_name).stem}_rectified.jpg"
-                right_name = f"{Path(img2_name).stem}_rectified.jpg"
+                rect_params['left'] = img1_id
+                rect_params['right'] = img2_id
             else:
-                left_name = f"{Path(img2_name).stem}_rectified.jpg"
-                right_name = f"{Path(img1_name).stem}_rectified.jpg"
-            return 'horizontal', '', '', left_name, right_name
+                rect_params['left'] = img2_id
+                rect_params['right'] = img1_id
+            rect_params['type'] = 'horizontal'
         else:
             # For vertical fallback, use the same logic
             t_rel = np.array(rect_params['t_rel'])
             if t_rel[1] > 0:
-                top_name = f"{Path(img2_name).stem}_rectified.jpg"
-                bottom_name = f"{Path(img1_name).stem}_rectified.jpg"
+                rect_params['top'] = img2_id
+                rect_params['bottom'] = img1_id
             else:
-                top_name = f"{Path(img1_name).stem}_rectified.jpg"
-                bottom_name = f"{Path(img2_name).stem}_rectified.jpg"
-            return 'vertical', top_name, bottom_name, '', ''
+                rect_params['top'] = img1_id
+                rect_params['bottom'] = img2_id
+            rect_params['type'] = 'vertical'
 
 
-def rectify_images(img1_path: str, img2_path: str, rect_params: Dict[str, Any], 
-                   output_dir: str) -> Tuple[str, str]:
+def rectify_images(rect_params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
     """
     Rectify two images using the computed rectification parameters.
     
     Args:
-        img1_path: Path to first image
-        img2_path: Path to second image
         rect_params: Rectification parameters
-        output_dir: Output directory for rectified images
         
     Returns:
-        Tuple of (rectified_img1_path, rectified_img2_path)
+        Tuple of (rectified_img1, rectified_img2)
     """
     # Load images
-    img1 = cv2.imread(img1_path)
-    img2 = cv2.imread(img2_path)
+    img1 = cv2.imread(rect_params['img1_path'])
+    img2 = cv2.imread(rect_params['img2_path'])
     
     if img1 is None:
-        raise ValueError(f"Could not load image: {img1_path}")
+        raise ValueError(f"Could not load image: {rect_params['img1_path']}")
     if img2 is None:
-        raise ValueError(f"Could not load image: {img2_path}")
+        raise ValueError(f"Could not load image: {rect_params['img2_path']}")
     
     # Reconstruct rectification parameters
     K1 = np.array(rect_params['K1'])
@@ -249,19 +254,7 @@ def rectify_images(img1_path: str, img2_path: str, rect_params: Dict[str, Any],
     img1_rect = cv2.remap(img1, map1_x, map1_y, cv2.INTER_LINEAR)
     img2_rect = cv2.remap(img2, map2_x, map2_y, cv2.INTER_LINEAR)
     
-    # Save rectified images
-    os.makedirs(output_dir, exist_ok=True)
-    
-    img1_name = Path(img1_path).stem
-    img2_name = Path(img2_path).stem
-    
-    rect1_path = os.path.join(output_dir, f"{img1_name}_rectified.jpg")
-    rect2_path = os.path.join(output_dir, f"{img2_name}_rectified.jpg")
-    
-    cv2.imwrite(rect1_path, img1_rect)
-    cv2.imwrite(rect2_path, img2_rect)
-    
-    return rect1_path, rect2_path
+    return img1_rect, img2_rect
 
 
 
@@ -663,11 +656,20 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     
     return coords_orig
 
-
-
-
-
-
+def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int) -> Dict[str, Any]:
+    rect_info = compute_stereo_rectification(reconstruction, img1_id, img2_id)
+    if rect_info['type'] == 'vertical':
+        if rect_info['top'] == rect_info['img1_id'] and rect_info['bottom'] == rect_info['img2_id']:
+            return rect_info
+        else:
+            return compute_stereo_rectification(reconstruction, img2_id, img1_id)
+    elif rect_info['type'] == 'horizontal':
+        if rect_info['left'] == rect_info['img1_id'] and rect_info['right'] == rect_info['img2_id']:
+            return rect_info
+        else:
+            return compute_stereo_rectification(reconstruction, img2_id, img1_id)
+    else:
+        raise ValueError(f"Invalid rectification type: {rect_info['type']}")
 
 
 def main():
@@ -705,7 +707,11 @@ def main():
     except Exception as e:
         print(f"Error loading reconstruction: {e}")
         sys.exit(1)
-    
+
+    # Create output directory
+    output_dir = scene_folder / args.out_folder
+    os.makedirs(output_dir, exist_ok=True)
+
     # Validate image IDs
     if not reconstruction.has_image(args.img_id1):
         print(f"Error: Image ID {args.img_id1} not found in reconstruction")
@@ -715,75 +721,37 @@ def main():
         print(f"Error: Image ID {args.img_id2} not found in reconstruction")
         sys.exit(1)
     
+    rect_info = initalize_rectification(reconstruction, args.img_id1, args.img_id2)
+
     # Get image names
-    img1_name = reconstruction.get_image_name(args.img_id1)
-    img2_name = reconstruction.get_image_name(args.img_id2)
+    img1_name = rect_info['img1_name']
+    img2_name = rect_info['img2_name']
+    print(f"Processing images: {img1_name} (ID: {rect_info['img1_id']}) and {img2_name} (ID: {rect_info['img2_id']})")
     
-    print(f"Processing images: {img1_name} (ID: {args.img_id1}) and {img2_name} (ID: {args.img_id2})")
-    
-    # Compute stereo rectification
-    print("Computing stereo rectification parameters...")
-    rect_params = compute_stereo_rectification(reconstruction, args.img_id1, args.img_id2)
-    
-    # Check rectification type and determine spatial order
-    rect_type, top_image, bottom_image, left_image, right_image = check_rectification_type_and_order(rect_params, img1_name, img2_name)
-    print(f"Rectification type: {rect_type}")
-    if rect_type == 'vertical':
-        print(f"Top image: {top_image}")
-        print(f"Bottom image: {bottom_image}")
-    elif rect_type == 'horizontal':
-        print(f"Left image: {left_image}")
-        print(f"Right image: {right_image}")
-    
-    # Get image paths
-    img1_path = images_path / img1_name
-    img2_path = images_path / img2_name
-    
-    if not img1_path.exists():
-        print(f"Error: Image file {img1_path} does not exist")
-        sys.exit(1)
-    
-    if not img2_path.exists():
-        print(f"Error: Image file {img2_path} does not exist")
-        sys.exit(1)
-    
-    # Create output directory
-    output_dir = scene_folder / args.out_folder
-    os.makedirs(output_dir, exist_ok=True)
-    
+    print(f"Rectification type: {rect_info['type']}")
+    if rect_info['type'] == 'vertical':
+        print(f"Top image: {rect_info['top']}")
+        print(f"Bottom image: {rect_info['bottom']}")
+    elif rect_info['type'] == 'horizontal':
+        print(f"Left image: {rect_info['left']}")
+        print(f"Right image: {rect_info['right']}")
+
+    img1_name = rect_info['img1_name']
+    img2_name = rect_info['img2_name']
+
+    rect_info['img1_path'] = str(images_path / img1_name)
+    rect_info['img2_path'] = str(images_path / img2_name)
+
+    rect_info['rect1_path'] = os.path.join(output_dir, f"{Path(img1_name).stem}_rectified.jpg")
+    rect_info['rect2_path'] = os.path.join(output_dir, f"{Path(img2_name).stem}_rectified.jpg")
+
     # Rectify images
     print("Rectifying images...")
-    rect1_path, rect2_path = rectify_images(
-        str(img1_path), str(img2_path), rect_params, str(output_dir)
-    )
-    
-    
-    # Prepare rectification info
-    rect_info = {
-        'image_ids': [args.img_id1, args.img_id2],
-        'image_names': [img1_name, img2_name],
-        'rectified_image_paths': [rect1_path, rect2_path],
-        'rectification_type': rect_type,
-        'rectification_parameters': rect_params
-    }
-    
-    # Add spatial information based on rectification type
-    if rect_type == 'vertical':
-        rect_info['top'] = top_image
-        rect_info['bottom'] = bottom_image
-        rect_info['left'] = ""
-        rect_info['right'] = ""
-    elif rect_type == 'horizontal':
-        rect_info['top'] = ""
-        rect_info['bottom'] = ""
-        rect_info['left'] = left_image
-        rect_info['right'] = right_image
-    else:
-        rect_info['top'] = ""
-        rect_info['bottom'] = ""
-        rect_info['left'] = ""
-        rect_info['right'] = ""
-    
+    rect1_img, rect2_img = rectify_images(rect_info)
+
+    cv2.imwrite(rect_info['rect1_path'], rect1_img)
+    cv2.imwrite(rect_info['rect2_path'], rect2_img)
+
     # Save rectification info
     rect_info_path = output_dir / 'rectification.json'
     with open(rect_info_path, 'w') as f:
@@ -792,8 +760,7 @@ def main():
     print(f"Rectification complete!")
     print(f"Rectified images saved to: {output_dir}")
     print(f"Rectification info saved to: {rect_info_path}")
-    print(f"Rectification type: {rect_type}")
-
+    print(f"Rectification type: {rect_info['type']}")
 
 if __name__ == '__main__':
     main()
