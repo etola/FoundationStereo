@@ -264,31 +264,6 @@ def rectify_images(img1_path: str, img2_path: str, rect_params: Dict[str, Any],
     return rect1_path, rect2_path
 
 
-def mark_coordinate_on_image(image_path: str, x: float, y: float, output_path: str, 
-                           color: Tuple[int, int, int] = (0, 255, 0), radius: int = 10):
-    """
-    Mark a coordinate on an image and save it.
-    
-    Args:
-        image_path: Path to input image
-        x, y: Coordinates to mark
-        output_path: Path to save marked image
-        color: BGR color for the marker
-        radius: Radius of the marker circle
-    """
-    img = cv2.imread(image_path)
-    if img is None:
-        raise ValueError(f"Could not load image: {image_path}")
-    
-    # Draw circle at the coordinate
-    cv2.circle(img, (int(x), int(y)), radius, color, -1)
-    cv2.circle(img, (int(x), int(y)), radius + 2, (0, 0, 0), 2)  # Black border
-    
-    # Add text label
-    cv2.putText(img, f"({x:.1f}, {y:.1f})", (int(x) + radius + 5, int(y) - 5), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-    
-    cv2.imwrite(output_path, img)
 
 
 def transform_coordinates_to_rectified(rect_params: Dict[str, Any], 
@@ -319,16 +294,16 @@ def transform_coordinates_to_rectified(rect_params: Dict[str, Any],
     x1, y1 = coords_img1
     x2, y2 = coords_img2
     
-    # Use OpenCV's undistortPoints for reliable transformation
+    # Use OpenCV's undistortPoints for reliable transformation (assuming no distortion)
     # This handles the undistortion and rectification in one step
     point1_rect = cv2.undistortPoints(
         np.array([[[x1, y1]]], dtype=np.float32), 
-        K1, dist1, R=R1_rect, P=P1
+        K1, None, R=R1_rect, P=P1
     )[0, 0]
     
     point2_rect = cv2.undistortPoints(
         np.array([[[x2, y2]]], dtype=np.float32), 
-        K2, dist2, R=R2_rect, P=P2
+        K2, None, R=R2_rect, P=P2
     )[0, 0]
     
     return (point1_rect[0], point1_rect[1]), (point2_rect[0], point2_rect[1])
@@ -403,43 +378,296 @@ def transform_coordinates_from_rectified(rect_params: Dict[str, Any],
     return (x1_orig, y1_orig), (x2_orig, y2_orig)
 
 
-def test_coordinate_transformations(rect_params: Dict[str, Any], 
-                                  test_coords: Tuple[Tuple[float, float], Tuple[float, float]],
-                                  tolerance: float = 5.0) -> bool:
+def transform_single_image_coordinates_to_rectified(rect_params: Dict[str, Any], 
+                                                  coords: Tuple[float, float], 
+                                                  image_id: int) -> Tuple[float, float]:
     """
-    Unit test for coordinate transformations.
+    Transform coordinates from a specific original image to its rectified version.
     
     Args:
         rect_params: Rectification parameters
-        test_coords: ((x1, y1), (x2, y2)) test coordinates
-        tolerance: Maximum allowed error in pixels
+        coords: (x, y) coordinates in the original image
+        image_id: Image ID (1 for first image, 2 for second image)
         
     Returns:
-        True if test passes, False otherwise
+        (x_rect, y_rect) coordinates in the rectified image
     """
-    coords_orig1, coords_orig2 = test_coords
+    # Reconstruct rectification parameters
+    if image_id == 1:
+        K = np.array(rect_params['K1'])
+        dist = np.array(rect_params['dist1'])
+        R_rect = np.array(rect_params['R1_rect'])
+        P = np.array(rect_params['P1'])
+    elif image_id == 2:
+        K = np.array(rect_params['K2'])
+        dist = np.array(rect_params['dist2'])
+        R_rect = np.array(rect_params['R2_rect'])
+        P = np.array(rect_params['P2'])
+    else:
+        raise ValueError(f"Invalid image_id: {image_id}. Must be 1 or 2.")
     
-    # Forward transformation: original -> rectified
-    coords_rect1, coords_rect2 = transform_coordinates_to_rectified(rect_params, coords_orig1, coords_orig2)
+    x, y = coords
     
-    # Reverse transformation: rectified -> original
-    coords_back1, coords_back2 = transform_coordinates_from_rectified(rect_params, coords_rect1, coords_rect2)
+    # Use OpenCV's undistortPoints for reliable transformation (assuming no distortion)
+    point_rect = cv2.undistortPoints(
+        np.array([[[x, y]]], dtype=np.float32), 
+        K, None, R=R_rect, P=P
+    )[0, 0]
     
-    # Check if we get back close to the original coordinates
-    error1 = np.sqrt((coords_orig1[0] - coords_back1[0])**2 + (coords_orig1[1] - coords_back1[1])**2)
-    error2 = np.sqrt((coords_orig2[0] - coords_back2[0])**2 + (coords_orig2[1] - coords_back2[1])**2)
+    return (point_rect[0], point_rect[1])
+
+
+def transform_single_image_coordinates_from_rectified(rect_params: Dict[str, Any], 
+                                                    coords_rect: Tuple[float, float], 
+                                                    image_id: int) -> Tuple[float, float]:
+    """
+    Transform coordinates from a specific rectified image back to its original version.
     
-    print(f"Coordinate transformation test:")
-    print(f"  Original coords: {coords_orig1}, {coords_orig2}")
-    print(f"  Rectified coords: {coords_rect1}, {coords_rect2}")
-    print(f"  Back-transformed coords: {coords_back1}, {coords_back2}")
-    print(f"  Errors: {error1:.2f}, {error2:.2f} pixels")
-    print(f"  Tolerance: {tolerance} pixels")
+    Args:
+        rect_params: Rectification parameters
+        coords_rect: (x, y) coordinates in the rectified image
+        image_id: Image ID (1 for first image, 2 for second image)
+        
+    Returns:
+        (x_orig, y_orig) coordinates in the original image
+    """
+    # Reconstruct rectification parameters
+    if image_id == 1:
+        K = np.array(rect_params['K1'])
+        R_rect = np.array(rect_params['R1_rect'])
+        P = np.array(rect_params['P1'])
+        roi = rect_params.get('roi1', (0, 0, 0, 0))
+    elif image_id == 2:
+        K = np.array(rect_params['K2'])
+        R_rect = np.array(rect_params['R2_rect'])
+        P = np.array(rect_params['P2'])
+        roi = rect_params.get('roi2', (0, 0, 0, 0))
+    else:
+        raise ValueError(f"Invalid image_id: {image_id}. Must be 1 or 2.")
     
-    success = error1 <= tolerance and error2 <= tolerance
-    print(f"  Test {'PASSED' if success else 'FAILED'}")
+    x_rect, y_rect = coords_rect
     
-    return success
+    # Step 1: Convert cropped rectified coordinates to uncropped coordinates
+    x_uncropped = x_rect + roi[0]  # Add ROI x offset
+    y_uncropped = y_rect + roi[1]  # Add ROI y offset
+    
+    # Step 2: Convert uncropped rectified coordinates to normalized coordinates
+    K_rect = P[:, :3]  # Intrinsic matrix for rectified camera
+    point_rect_normalized = np.linalg.inv(K_rect) @ np.array([x_uncropped, y_uncropped, 1])
+    
+    # Step 3: Apply inverse rectification rotation
+    point_original_normalized = R_rect.T @ point_rect_normalized
+    
+    # Step 4: Project back to original image coordinates
+    point_orig_homogeneous = K @ point_original_normalized
+    x_orig = point_orig_homogeneous[0] / point_orig_homogeneous[2]
+    y_orig = point_orig_homogeneous[1] / point_orig_homogeneous[2]
+    
+    return (x_orig, y_orig)
+
+
+def transform_coordinates_to_rectified_vectorized(rect_params: Dict[str, Any], 
+                                                coords_img1: np.ndarray, 
+                                                coords_img2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Vectorized version: Transform arrays of coordinates from original images to rectified images.
+    
+    Args:
+        rect_params: Rectification parameters
+        coords_img1: Nx2 array of (x, y) coordinates in first original image
+        coords_img2: Nx2 array of (x, y) coordinates in second original image
+        
+    Returns:
+        Tuple of (coords_rect1, coords_rect2) where each is Nx2 array of rectified coordinates
+    """
+    # Reconstruct rectification parameters
+    K1 = np.array(rect_params['K1'])
+    K2 = np.array(rect_params['K2'])
+    dist1 = np.array(rect_params['dist1'])
+    dist2 = np.array(rect_params['dist2'])
+    R1_rect = np.array(rect_params['R1_rect'])
+    R2_rect = np.array(rect_params['R2_rect'])
+    P1 = np.array(rect_params['P1'])
+    P2 = np.array(rect_params['P2'])
+    
+    # Ensure inputs are numpy arrays
+    coords_img1 = np.array(coords_img1, dtype=np.float32)
+    coords_img2 = np.array(coords_img2, dtype=np.float32)
+    
+    # Reshape to (N, 1, 2) for OpenCV
+    points1 = coords_img1.reshape(-1, 1, 2)
+    points2 = coords_img2.reshape(-1, 1, 2)
+    
+    # Use OpenCV's undistortPoints for vectorized transformation (assuming no distortion)
+    points1_rect = cv2.undistortPoints(points1, K1, None, R=R1_rect, P=P1)
+    points2_rect = cv2.undistortPoints(points2, K2, None, R=R2_rect, P=P2)
+    
+    # Reshape back to (N, 2)
+    coords_rect1 = points1_rect.reshape(-1, 2)
+    coords_rect2 = points2_rect.reshape(-1, 2)
+    
+    return coords_rect1, coords_rect2
+
+
+def transform_coordinates_from_rectified_vectorized(rect_params: Dict[str, Any], 
+                                                  coords_rect1: np.ndarray, 
+                                                  coords_rect2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Vectorized version: Transform arrays of coordinates from rectified images back to original images.
+    
+    Args:
+        rect_params: Rectification parameters
+        coords_rect1: Nx2 array of (x, y) coordinates in first rectified image
+        coords_rect2: Nx2 array of (x, y) coordinates in second rectified image
+        
+    Returns:
+        Tuple of (coords_orig1, coords_orig2) where each is Nx2 array of original coordinates
+    """
+    # Reconstruct rectification parameters
+    K1 = np.array(rect_params['K1'])
+    K2 = np.array(rect_params['K2'])
+    R1_rect = np.array(rect_params['R1_rect'])
+    R2_rect = np.array(rect_params['R2_rect'])
+    P1 = np.array(rect_params['P1'])
+    P2 = np.array(rect_params['P2'])
+    roi1 = rect_params.get('roi1', (0, 0, 0, 0))
+    roi2 = rect_params.get('roi2', (0, 0, 0, 0))
+    
+    # Ensure inputs are numpy arrays
+    coords_rect1 = np.array(coords_rect1, dtype=np.float64)
+    coords_rect2 = np.array(coords_rect2, dtype=np.float64)
+    
+    # Step 1: Convert cropped rectified coordinates to uncropped coordinates
+    coords_uncropped1 = coords_rect1 + np.array([roi1[0], roi1[1]])
+    coords_uncropped2 = coords_rect2 + np.array([roi2[0], roi2[1]])
+    
+    # Step 2: Convert to homogeneous coordinates
+    ones = np.ones((coords_uncropped1.shape[0], 1))
+    coords_hom1 = np.hstack([coords_uncropped1, ones])
+    coords_hom2 = np.hstack([coords_uncropped2, ones])
+    
+    # Step 3: Convert to normalized coordinates
+    K_rect1 = P1[:, :3]
+    K_rect2 = P2[:, :3]
+    coords_norm1 = (np.linalg.inv(K_rect1) @ coords_hom1.T).T
+    coords_norm2 = (np.linalg.inv(K_rect2) @ coords_hom2.T).T
+    
+    # Step 4: Apply inverse rectification rotation
+    coords_orig_norm1 = (R1_rect.T @ coords_norm1.T).T
+    coords_orig_norm2 = (R2_rect.T @ coords_norm2.T).T
+    
+    # Step 5: Project back to original image coordinates
+    coords_orig_hom1 = (K1 @ coords_orig_norm1.T).T
+    coords_orig_hom2 = (K2 @ coords_orig_norm2.T).T
+    
+    # Step 6: Convert back to 2D coordinates
+    coords_orig1 = coords_orig_hom1[:, :2] / coords_orig_hom1[:, 2:3]
+    coords_orig2 = coords_orig_hom2[:, :2] / coords_orig_hom2[:, 2:3]
+    
+    return coords_orig1, coords_orig2
+
+
+def transform_single_image_coordinates_to_rectified_vectorized(rect_params: Dict[str, Any], 
+                                                            coords: np.ndarray, 
+                                                            image_id: int) -> np.ndarray:
+    """
+    Vectorized version: Transform array of coordinates from a specific original image to its rectified version.
+    
+    Args:
+        rect_params: Rectification parameters
+        coords: Nx2 array of (x, y) coordinates in the original image
+        image_id: Image ID (1 for first image, 2 for second image)
+        
+    Returns:
+        Nx2 array of (x_rect, y_rect) coordinates in the rectified image
+    """
+    # Reconstruct rectification parameters
+    if image_id == 1:
+        K = np.array(rect_params['K1'])
+        dist = np.array(rect_params['dist1'])
+        R_rect = np.array(rect_params['R1_rect'])
+        P = np.array(rect_params['P1'])
+    elif image_id == 2:
+        K = np.array(rect_params['K2'])
+        dist = np.array(rect_params['dist2'])
+        R_rect = np.array(rect_params['R2_rect'])
+        P = np.array(rect_params['P2'])
+    else:
+        raise ValueError(f"Invalid image_id: {image_id}. Must be 1 or 2.")
+    
+    # Ensure input is numpy array
+    coords = np.array(coords, dtype=np.float32)
+    
+    # Reshape to (N, 1, 2) for OpenCV
+    points = coords.reshape(-1, 1, 2)
+    
+    # Use OpenCV's undistortPoints for vectorized transformation (assuming no distortion)
+    points_rect = cv2.undistortPoints(points, K, None, R=R_rect, P=P)
+    
+    # Reshape back to (N, 2)
+    coords_rect = points_rect.reshape(-1, 2)
+    
+    return coords_rect
+
+
+def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Dict[str, Any], 
+                                                              coords_rect: np.ndarray, 
+                                                              image_id: int) -> np.ndarray:
+    """
+    Vectorized version: Transform array of coordinates from a specific rectified image back to its original version.
+    
+    Args:
+        rect_params: Rectification parameters
+        coords_rect: Nx2 array of (x, y) coordinates in the rectified image
+        image_id: Image ID (1 for first image, 2 for second image)
+        
+    Returns:
+        Nx2 array of (x_orig, y_orig) coordinates in the original image
+    """
+    # Reconstruct rectification parameters
+    if image_id == 1:
+        K = np.array(rect_params['K1'])
+        R_rect = np.array(rect_params['R1_rect'])
+        P = np.array(rect_params['P1'])
+        roi = rect_params.get('roi1', (0, 0, 0, 0))
+    elif image_id == 2:
+        K = np.array(rect_params['K2'])
+        R_rect = np.array(rect_params['R2_rect'])
+        P = np.array(rect_params['P2'])
+        roi = rect_params.get('roi2', (0, 0, 0, 0))
+    else:
+        raise ValueError(f"Invalid image_id: {image_id}. Must be 1 or 2.")
+    
+    # Ensure input is numpy array
+    coords_rect = np.array(coords_rect, dtype=np.float64)
+    
+    # Step 1: Convert cropped rectified coordinates to uncropped coordinates
+    coords_uncropped = coords_rect + np.array([roi[0], roi[1]])
+    
+    # Step 2: Convert to homogeneous coordinates
+    ones = np.ones((coords_uncropped.shape[0], 1))
+    coords_hom = np.hstack([coords_uncropped, ones])
+    
+    # Step 3: Convert to normalized coordinates
+    K_rect = P[:, :3]
+    coords_norm = (np.linalg.inv(K_rect) @ coords_hom.T).T
+    
+    # Step 4: Apply inverse rectification rotation
+    coords_orig_norm = (R_rect.T @ coords_norm.T).T
+    
+    # Step 5: Project back to original image coordinates
+    coords_orig_hom = (K @ coords_orig_norm.T).T
+    
+    # Step 6: Convert back to 2D coordinates
+    coords_orig = coords_orig_hom[:, :2] / coords_orig_hom[:, 2:3]
+    
+    return coords_orig
+
+
+
+
+
+
 
 
 def main():
@@ -448,8 +676,6 @@ def main():
                        help='Path to scene folder containing sparse/ and images/')
     parser.add_argument('-o', '--out_folder', required=True,
                        help='Output folder name (will be created under scene_folder)')
-    parser.add_argument('--debug', nargs=4, type=float, metavar=('X0', 'Y0', 'X1', 'Y1'),
-                       help='Debug mode: mark coordinates (x0,y0) in first image and (x1,y1) in second image')
     parser.add_argument('img_id1', type=int, help='First image ID')
     parser.add_argument('img_id2', type=int, help='Second image ID')
     
@@ -531,55 +757,6 @@ def main():
         str(img1_path), str(img2_path), rect_params, str(output_dir)
     )
     
-    # Debug mode: mark coordinates and test transformations
-    if args.debug:
-        x0, y0, x1, y1 = args.debug
-        print(f"\nDebug mode: Marking coordinates ({x0}, {y0}) and ({x1}, {y1})")
-        
-        # Mark coordinates on original images
-        img1_marked_path = output_dir / f"{Path(img1_name).stem}_marked_original.jpg"
-        img2_marked_path = output_dir / f"{Path(img2_name).stem}_marked_original.jpg"
-        
-        mark_coordinate_on_image(str(img1_path), x0, y0, str(img1_marked_path), (0, 255, 0))
-        mark_coordinate_on_image(str(img2_path), x1, y1, str(img2_marked_path), (0, 255, 0))
-        print(f"Marked original images saved to: {img1_marked_path}, {img2_marked_path}")
-        
-        # Transform coordinates to rectified space
-        coords_rect1, coords_rect2 = transform_coordinates_to_rectified(
-            rect_params, (x0, y0), (x1, y1)
-        )
-        print(f"Rectified coordinates: {coords_rect1}, {coords_rect2}")
-        
-        # Mark coordinates on rectified images
-        rect1_marked_path = output_dir / f"{Path(img1_name).stem}_marked_rectified.jpg"
-        rect2_marked_path = output_dir / f"{Path(img2_name).stem}_marked_rectified.jpg"
-        
-        mark_coordinate_on_image(rect1_path, coords_rect1[0], coords_rect1[1], str(rect1_marked_path), (255, 0, 0))
-        mark_coordinate_on_image(rect2_path, coords_rect2[0], coords_rect2[1], str(rect2_marked_path), (255, 0, 0))
-        print(f"Marked rectified images saved to: {rect1_marked_path}, {rect2_marked_path}")
-        
-        # Test reverse transformation
-        coords_back1, coords_back2 = transform_coordinates_from_rectified(
-            rect_params, coords_rect1, coords_rect2
-        )
-        print(f"Back-transformed coordinates: {coords_back1}, {coords_back2}")
-        
-        # Run unit test
-        print("\nRunning coordinate transformation unit test...")
-        test_success = test_coordinate_transformations(rect_params, ((x0, y0), (x1, y1)), tolerance=10.0)
-        
-        # Mark back-transformed coordinates on original images
-        img1_back_marked_path = output_dir / f"{Path(img1_name).stem}_marked_back_transformed.jpg"
-        img2_back_marked_path = output_dir / f"{Path(img2_name).stem}_marked_back_transformed.jpg"
-        
-        mark_coordinate_on_image(str(img1_path), coords_back1[0], coords_back1[1], str(img1_back_marked_path), (0, 0, 255))
-        mark_coordinate_on_image(str(img2_path), coords_back2[0], coords_back2[1], str(img2_back_marked_path), (0, 0, 255))
-        print(f"Back-transformed marked images saved to: {img1_back_marked_path}, {img2_back_marked_path}")
-        
-        if test_success:
-            print("✓ All coordinate transformations working correctly!")
-        else:
-            print("⚠ Coordinate transformation test failed - check the results")
     
     # Prepare rectification info
     rect_info = {
