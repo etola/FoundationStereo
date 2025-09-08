@@ -141,6 +141,7 @@ def test_coordinate_transformations(rect_params: Dict[str, Any],
                                   tolerance: float = 1.0) -> bool:
     """
     Unit test for coordinate transformations by checking round-trip accuracy.
+    Updated to handle the new pipeline with rotation for vertical alignment.
     
     Args:
         rect_params: Rectification parameters
@@ -156,6 +157,8 @@ def test_coordinate_transformations(rect_params: Dict[str, Any],
     
     print("Coordinate transformation test:")
     print(f"  Original coords: {coords_img1}, {coords_img2}")
+    if rect_params.get('is_vertical', False):
+        print("  Note: Testing with vertical alignment (rotation applied)")
     
     # Forward transformation
     coords_rect1, coords_rect2 = transform_coordinates_to_rectified(rect_params, coords_img1, coords_img2)
@@ -183,6 +186,7 @@ def test_single_image_coordinate_transformations(rect_params: Dict[str, Any],
                                                tolerance: float = 1.0) -> bool:
     """
     Unit test for single image coordinate transformations by comparing with the existing function.
+    Updated to handle the new pipeline with rotation for vertical alignment.
     
     Args:
         rect_params: Rectification parameters
@@ -203,6 +207,8 @@ def test_single_image_coordinate_transformations(rect_params: Dict[str, Any],
     
     print("\nTesting single image coordinate transformations:")
     print(f"  Test coordinates: {coords_img1}, {coords_img2}")
+    if rect_params.get('is_vertical', False):
+        print("  Note: Testing with vertical alignment (rotation applied)")
     
     # Test forward transformation comparison
     print(f"  Forward transformation comparison:")
@@ -271,6 +277,7 @@ def test_vectorized_coordinate_transformations(rect_params: Dict[str, Any],
                                              tolerance: float = 1e-3) -> bool:
     """
     Comprehensive test for vectorized coordinate transformations by comparing with single coordinate versions.
+    Updated to handle the new pipeline with rotation for vertical alignment.
     
     Args:
         rect_params: Rectification parameters
@@ -290,6 +297,8 @@ def test_vectorized_coordinate_transformations(rect_params: Dict[str, Any],
     )
     
     print(f"\nTesting vectorized coordinate transformations with {num_test_points} random points:")
+    if rect_params.get('is_vertical', False):
+        print("  Note: Testing with vertical alignment (rotation applied)")
     
     # Generate random test coordinates within reasonable image bounds
     np.random.seed(42)  # For reproducible results
@@ -527,6 +536,13 @@ def main():
     try:
         from rectify_stereo import initalize_rectification, rectify_images
         rect_params = initalize_rectification(reconstruction, args.img_id1, args.img_id2, images_path, output_dir)
+        
+        # Print information about the rectification
+        print(f"Rectification type: {rect_params['type']}")
+        print(f"Left image: {rect_params['left']}")
+        print(f"Right image: {rect_params['right']}")
+        if rect_params.get('is_vertical', False):
+            print("Note: Images were vertically aligned and rotated 90 degrees before rectification")
     except Exception as e:
         print(f"Error computing rectification: {e}")
         sys.exit(1)

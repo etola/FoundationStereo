@@ -25,10 +25,71 @@ import numpy as np
 from colmap_utils import ColmapReconstruction
 
 
+def _is_vertically_aligned(R_rel: np.ndarray, t_rel: np.ndarray) -> bool:
+    """
+    Check if the stereo pair is vertically aligned based on relative pose.
+    
+    Args:
+        R_rel: Relative rotation matrix between cameras
+        t_rel: Relative translation vector between cameras
+        
+    Returns:
+        True if vertically aligned, False if horizontally aligned
+    """
+    # Check if the translation is primarily in the Y direction (vertical)
+    # and the rotation is primarily around the X axis
+    t_rel_norm = np.linalg.norm(t_rel)
+    if t_rel_norm < 1e-6:
+        return False
+    
+    # Normalize translation vector
+    t_rel_normalized = t_rel / t_rel_norm
+    
+    # Check if Y component is dominant (vertical alignment)
+    y_dominance = abs(t_rel_normalized[1])
+    x_dominance = abs(t_rel_normalized[0])
+    
+    # Also check rotation around X-axis (pitch) which is typical for vertical stereo
+    # Extract rotation angles using Rodrigues formula
+    angle_axis = cv2.Rodrigues(R_rel)[0].flatten()
+    pitch_rotation = abs(angle_axis[0])  # Rotation around X-axis
+    
+    # Consider it vertical if Y translation is dominant and there's significant pitch rotation
+    is_vertical = (y_dominance > 0.7) and (pitch_rotation > 0.1)
+    
+    return is_vertical
+
+
+def _determine_left_right_cameras(rect_params: Dict[str, Any]) -> None:
+    """
+    Determine which camera is left and which is right for horizontal rectification.
+    
+    Args:
+        rect_params: Rectification parameters dictionary (will be modified)
+    """
+    img1_id = rect_params['img1_id']
+    img2_id = rect_params['img2_id']
+    
+    # Use the rotated relative translation to determine left/right
+    t_rel_rotated = np.array(rect_params['t_rel_rotated'])
+    
+    # If t_rel_rotated[0] > 0, camera 2 is to the right of camera 1
+    # If t_rel_rotated[0] < 0, camera 1 is to the right of camera 2
+    if t_rel_rotated[0] > 0:
+        # Camera 1 is left, camera 2 is right
+        rect_params['left'] = img1_id
+        rect_params['right'] = img2_id
+    else:
+        # Camera 2 is left, camera 1 is right
+        rect_params['left'] = img2_id
+        rect_params['right'] = img1_id
+
+
 def compute_stereo_rectification(reconstruction: ColmapReconstruction, 
                                 img1_id: int, img2_id: int, images_path: Path, output_dir: Path) -> Dict[str, Any]:
     """
     Compute stereo rectification parameters for two images.
+    If images are vertically aligned, applies 90-degree rotation first, then horizontal rectification.
     
     Args:
         reconstruction: ColmapReconstruction object
@@ -61,17 +122,35 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     R_rel = R2 @ R1.T
     t_rel = t2 - R_rel @ t1
     
-    # Compute essential matrix
-    t_skew = np.array([
-        [0, -t_rel[2], t_rel[1]],
-        [t_rel[2], 0, -t_rel[0]],
-        [-t_rel[1], t_rel[0], 0]
-    ])
-    E = t_skew @ R_rel
+    # Check if images are vertically aligned
+    is_vertical = _is_vertically_aligned(R_rel, t_rel)
     
-    # Stereo rectification using OpenCV functions
+    # Initialize rotation matrices and transformed parameters
+    R_rotation = np.eye(3)  # Identity matrix for no rotation
+    K1_rotated = K1.copy()
+    K2_rotated = K2.copy()
+    image_size_rotated = image_size
+    R_rel_rotated = R_rel
+    t_rel_rotated = t_rel
+    
+    if is_vertical:
+        # Apply 90-degree rotation (transpose) to make it horizontal
+        R_rotation = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]])  # 90-degree rotation around Z-axis
+        
+        # Transform intrinsic matrices
+        K1_rotated = R_rotation @ K1
+        K2_rotated = R_rotation @ K2
+        
+        # Update image size (width and height are swapped)
+        image_size_rotated = (image_size[1], image_size[0])
+        
+        # Transform relative pose
+        R_rel_rotated = R_rotation @ R_rel @ R_rotation.T
+        t_rel_rotated = R_rotation @ t_rel
+    
+    # Stereo rectification using OpenCV functions (now always horizontal)
     R1_rect, R2_rect, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
-        K1, dist1, K2, dist2, image_size, R_rel, t_rel,
+        K1_rotated, dist1, K2_rotated, dist2, image_size_rotated, R_rel_rotated, t_rel_rotated,
         flags=cv2.CALIB_ZERO_DISPARITY, alpha=0
     )
 
@@ -89,6 +168,8 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
         'rect2_path': os.path.join(output_dir, f"{Path(img2_name).stem}_rectified.jpg"),
         'K1': K1.tolist(),
         'K2': K2.tolist(),
+        'K1_rotated': K1_rotated.tolist(),
+        'K2_rotated': K2_rotated.tolist(),
         'dist1': dist1.tolist(),
         'dist2': dist2.tolist(),
         'R1': R1.tolist(),
@@ -97,17 +178,25 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
         't2': t2.tolist(),
         'R_rel': R_rel.tolist(),
         't_rel': t_rel.tolist(),
-        'E': E.tolist(),
+        'R_rel_rotated': R_rel_rotated.tolist(),
+        't_rel_rotated': t_rel_rotated.tolist(),
+        'R_rotation': R_rotation.tolist(),
+        'is_vertical': is_vertical,
         'R1_rect': R1_rect.tolist(),
         'R2_rect': R2_rect.tolist(),
         'P1': P1.tolist(),
         'P2': P2.tolist(),
         'Q': Q.tolist(),
         'image_size': image_size,
+        'image_size_rotated': image_size_rotated,
         'roi1': roi1,
         'roi2': roi2
     }
-    determine_rectification_type(rect_info)
+    
+    # Since we always do horizontal rectification now, set the type accordingly
+    rect_info['type'] = 'horizontal'
+    _determine_left_right_cameras(rect_info)
+    
     return rect_info
 
 def determine_rectification_type(rect_params: Dict[str, Any]) -> None:
@@ -226,6 +315,7 @@ def determine_rectification_type(rect_params: Dict[str, Any]) -> None:
 def rectify_images(rect_params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
     """
     Rectify two images using the computed rectification parameters.
+    Handles rotation for vertically aligned images.
     
     Args:
         rect_params: Rectification parameters
@@ -242,20 +332,28 @@ def rectify_images(rect_params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]
     if img2 is None:
         raise ValueError(f"Could not load image: {rect_params['img2_path']}")
     
+    # Check if rotation is needed
+    is_vertical = rect_params.get('is_vertical', False)
+    
+    if is_vertical:
+        # Apply 90-degree rotation to images first
+        img1 = cv2.rotate(img1, cv2.ROTATE_90_CLOCKWISE)
+        img2 = cv2.rotate(img2, cv2.ROTATE_90_CLOCKWISE)
+    
     # Reconstruct rectification parameters
-    K1 = np.array(rect_params['K1'])
-    K2 = np.array(rect_params['K2'])
+    K1_rotated = np.array(rect_params['K1_rotated'])
+    K2_rotated = np.array(rect_params['K2_rotated'])
     dist1 = np.array(rect_params['dist1'])
     dist2 = np.array(rect_params['dist2'])
     R1_rect = np.array(rect_params['R1_rect'])
     R2_rect = np.array(rect_params['R2_rect'])
     P1 = np.array(rect_params['P1'])
     P2 = np.array(rect_params['P2'])
-    image_size = tuple(rect_params['image_size'])
+    image_size_rotated = tuple(rect_params['image_size_rotated'])
     
     # Compute rectification maps
-    map1_x, map1_y = cv2.initUndistortRectifyMap(K1, dist1, R1_rect, P1, image_size, cv2.CV_32FC1)
-    map2_x, map2_y = cv2.initUndistortRectifyMap(K2, dist2, R2_rect, P2, image_size, cv2.CV_32FC1)
+    map1_x, map1_y = cv2.initUndistortRectifyMap(K1_rotated, dist1, R1_rect, P1, image_size_rotated, cv2.CV_32FC1)
+    map2_x, map2_y = cv2.initUndistortRectifyMap(K2_rotated, dist2, R2_rect, P2, image_size_rotated, cv2.CV_32FC1)
     
     # Apply rectification
     img1_rect = cv2.remap(img1, map1_x, map1_y, cv2.INTER_LINEAR)
@@ -270,8 +368,8 @@ def transform_coordinates_to_rectified(rect_params: Dict[str, Any],
                                      coords_img1: Tuple[float, float], 
                                      coords_img2: Tuple[float, float]) -> Tuple[Tuple[float, float], Tuple[float, float]]:
     """
-    Transform coordinates from original images to rectified images using OpenCV's undistortPoints.
-    This is more reliable than manual matrix operations.
+    Transform coordinates from original images to rectified images.
+    Pipeline: Original → Rotation (if vertical) → Rectification → Cropping (if alpha=0)
     
     Args:
         rect_params: Rectification parameters
@@ -284,27 +382,51 @@ def transform_coordinates_to_rectified(rect_params: Dict[str, Any],
     # Reconstruct rectification parameters
     K1 = np.array(rect_params['K1'])
     K2 = np.array(rect_params['K2'])
+    K1_rotated = np.array(rect_params['K1_rotated'])
+    K2_rotated = np.array(rect_params['K2_rotated'])
     dist1 = np.array(rect_params['dist1'])
     dist2 = np.array(rect_params['dist2'])
     R1_rect = np.array(rect_params['R1_rect'])
     R2_rect = np.array(rect_params['R2_rect'])
     P1 = np.array(rect_params['P1'])
     P2 = np.array(rect_params['P2'])
+    is_vertical = rect_params.get('is_vertical', False)
+    image_size = tuple(rect_params['image_size'])
     
     x1, y1 = coords_img1
     x2, y2 = coords_img2
     
-    # Use OpenCV's undistortPoints for reliable transformation (assuming no distortion)
-    # This handles the undistortion and rectification in one step
+    # Step 1: Apply rotation if needed
+    if is_vertical:
+        # Apply 90-degree rotation to coordinates
+        # For 90-degree clockwise rotation: (x, y) -> (y, height - x)
+        x1_rot = y1
+        y1_rot = image_size[1] - x1
+        x2_rot = y2
+        y2_rot = image_size[1] - x2
+        
+        # Use rotated intrinsic matrices
+        K1_use = K1_rotated
+        K2_use = K2_rotated
+    else:
+        x1_rot, y1_rot = x1, y1
+        x2_rot, y2_rot = x2, y2
+        K1_use = K1
+        K2_use = K2
+    
+    # Step 2: Apply rectification using OpenCV's undistortPoints
     point1_rect = cv2.undistortPoints(
-        np.array([[[x1, y1]]], dtype=np.float32), 
-        K1, None, R=R1_rect, P=P1
+        np.array([[[x1_rot, y1_rot]]], dtype=np.float32), 
+        K1_use, None, R=R1_rect, P=P1
     )[0, 0]
     
     point2_rect = cv2.undistortPoints(
-        np.array([[[x2, y2]]], dtype=np.float32), 
-        K2, None, R=R2_rect, P=P2
+        np.array([[[x2_rot, y2_rot]]], dtype=np.float32), 
+        K2_use, None, R=R2_rect, P=P2
     )[0, 0]
+    
+    # Step 3: Apply cropping (alpha=0 means cropping is already applied in P1, P2)
+    # The coordinates returned are already in the cropped rectified image space
     
     return (point1_rect[0], point1_rect[1]), (point2_rect[0], point2_rect[1])
 
@@ -314,7 +436,7 @@ def transform_coordinates_from_rectified(rect_params: Dict[str, Any],
                                        coords_rect2: Tuple[float, float]) -> Tuple[Tuple[float, float], Tuple[float, float]]:
     """
     Transform coordinates from rectified images back to original images.
-    Based on understanding of OpenCV's stereoRectify with alpha=0 cropping.
+    Pipeline: Cropping → Rectification → Rotation (if vertical) → Original
     
     Args:
         rect_params: Rectification parameters
@@ -327,6 +449,8 @@ def transform_coordinates_from_rectified(rect_params: Dict[str, Any],
     # Reconstruct rectification parameters
     K1 = np.array(rect_params['K1'])
     K2 = np.array(rect_params['K2'])
+    K1_rotated = np.array(rect_params['K1_rotated'])
+    K2_rotated = np.array(rect_params['K2_rotated'])
     dist1 = np.array(rect_params['dist1'])
     dist2 = np.array(rect_params['dist2'])
     R1_rect = np.array(rect_params['R1_rect'])
@@ -335,6 +459,8 @@ def transform_coordinates_from_rectified(rect_params: Dict[str, Any],
     P2 = np.array(rect_params['P2'])
     roi1 = rect_params.get('roi1', (0, 0, 0, 0))
     roi2 = rect_params.get('roi2', (0, 0, 0, 0))
+    is_vertical = rect_params.get('is_vertical', False)
+    image_size = tuple(rect_params['image_size'])
     
     x1_rect, y1_rect = coords_rect1
     x2_rect, y2_rect = coords_rect2
@@ -360,20 +486,34 @@ def transform_coordinates_from_rectified(rect_params: Dict[str, Any],
     point1_original_normalized = R1_rect.T @ point1_rect_normalized
     point2_original_normalized = R2_rect.T @ point2_rect_normalized
     
-    # Step 4: Project back to original image coordinates
-    # For the first camera, we need to account for the translation in P1
-    # P1 = K_rect * [R1_rect | 0], so the translation is zero
-    point1_orig_homogeneous = K1 @ point1_original_normalized
-    x1_orig = point1_orig_homogeneous[0] / point1_orig_homogeneous[2]
-    y1_orig = point1_orig_homogeneous[1] / point1_orig_homogeneous[2]
+    # Step 4: Project back to rotated image coordinates
+    if is_vertical:
+        # Use rotated intrinsic matrices
+        K1_use = K1_rotated
+        K2_use = K2_rotated
+    else:
+        K1_use = K1
+        K2_use = K2
     
-    # For the second camera, P2 = K_rect * [R2_rect | t_rect]
-    # The translation in P2 represents the baseline between cameras
-    # In stereo rectification, both cameras have the same rectification rotation
-    # So we can use the same approach as the first camera
-    point2_orig_homogeneous = K2 @ point2_original_normalized
-    x2_orig = point2_orig_homogeneous[0] / point2_orig_homogeneous[2]
-    y2_orig = point2_orig_homogeneous[1] / point2_orig_homogeneous[2]
+    point1_rotated_homogeneous = K1_use @ point1_original_normalized
+    x1_rotated = point1_rotated_homogeneous[0] / point1_rotated_homogeneous[2]
+    y1_rotated = point1_rotated_homogeneous[1] / point1_rotated_homogeneous[2]
+    
+    point2_rotated_homogeneous = K2_use @ point2_original_normalized
+    x2_rotated = point2_rotated_homogeneous[0] / point2_rotated_homogeneous[2]
+    y2_rotated = point2_rotated_homogeneous[1] / point2_rotated_homogeneous[2]
+    
+    # Step 5: Apply inverse rotation if needed
+    if is_vertical:
+        # Apply inverse 90-degree rotation to coordinates
+        # For inverse 90-degree clockwise rotation: (x, y) -> (height - y, x)
+        x1_orig = image_size[1] - y1_rotated
+        y1_orig = x1_rotated
+        x2_orig = image_size[1] - y2_rotated
+        y2_orig = x2_rotated
+    else:
+        x1_orig, y1_orig = x1_rotated, y1_rotated
+        x2_orig, y2_orig = x2_rotated, y2_rotated
     
     return (x1_orig, y1_orig), (x2_orig, y2_orig)
 
@@ -383,6 +523,7 @@ def transform_single_image_coordinates_to_rectified(rect_params: Dict[str, Any],
                                                   image_id: int) -> Tuple[float, float]:
     """
     Transform coordinates from a specific original image to its rectified version.
+    Pipeline: Original → Rotation (if vertical) → Rectification → Cropping (if alpha=0)
     
     Args:
         rect_params: Rectification parameters
@@ -395,11 +536,13 @@ def transform_single_image_coordinates_to_rectified(rect_params: Dict[str, Any],
     # Reconstruct rectification parameters
     if image_id == 1:
         K = np.array(rect_params['K1'])
+        K_rotated = np.array(rect_params['K1_rotated'])
         dist = np.array(rect_params['dist1'])
         R_rect = np.array(rect_params['R1_rect'])
         P = np.array(rect_params['P1'])
     elif image_id == 2:
         K = np.array(rect_params['K2'])
+        K_rotated = np.array(rect_params['K2_rotated'])
         dist = np.array(rect_params['dist2'])
         R_rect = np.array(rect_params['R2_rect'])
         P = np.array(rect_params['P2'])
@@ -407,11 +550,24 @@ def transform_single_image_coordinates_to_rectified(rect_params: Dict[str, Any],
         raise ValueError(f"Invalid image_id: {image_id}. Must be 1 or 2.")
     
     x, y = coords
+    is_vertical = rect_params.get('is_vertical', False)
+    image_size = tuple(rect_params['image_size'])
     
-    # Use OpenCV's undistortPoints for reliable transformation (assuming no distortion)
+    # Step 1: Apply rotation if needed
+    if is_vertical:
+        # Apply 90-degree rotation to coordinates
+        # For 90-degree clockwise rotation: (x, y) -> (y, height - x)
+        x_rot = y
+        y_rot = image_size[1] - x
+        K_use = K_rotated
+    else:
+        x_rot, y_rot = x, y
+        K_use = K
+    
+    # Step 2: Apply rectification using OpenCV's undistortPoints
     point_rect = cv2.undistortPoints(
-        np.array([[[x, y]]], dtype=np.float32), 
-        K, None, R=R_rect, P=P
+        np.array([[[x_rot, y_rot]]], dtype=np.float32), 
+        K_use, None, R=R_rect, P=P
     )[0, 0]
     
     return (point_rect[0], point_rect[1])
@@ -422,6 +578,7 @@ def transform_single_image_coordinates_from_rectified(rect_params: Dict[str, Any
                                                     image_id: int) -> Tuple[float, float]:
     """
     Transform coordinates from a specific rectified image back to its original version.
+    Pipeline: Cropping → Rectification → Rotation (if vertical) → Original
     
     Args:
         rect_params: Rectification parameters
@@ -434,11 +591,13 @@ def transform_single_image_coordinates_from_rectified(rect_params: Dict[str, Any
     # Reconstruct rectification parameters
     if image_id == 1:
         K = np.array(rect_params['K1'])
+        K_rotated = np.array(rect_params['K1_rotated'])
         R_rect = np.array(rect_params['R1_rect'])
         P = np.array(rect_params['P1'])
         roi = rect_params.get('roi1', (0, 0, 0, 0))
     elif image_id == 2:
         K = np.array(rect_params['K2'])
+        K_rotated = np.array(rect_params['K2_rotated'])
         R_rect = np.array(rect_params['R2_rect'])
         P = np.array(rect_params['P2'])
         roi = rect_params.get('roi2', (0, 0, 0, 0))
@@ -446,6 +605,8 @@ def transform_single_image_coordinates_from_rectified(rect_params: Dict[str, Any
         raise ValueError(f"Invalid image_id: {image_id}. Must be 1 or 2.")
     
     x_rect, y_rect = coords_rect
+    is_vertical = rect_params.get('is_vertical', False)
+    image_size = tuple(rect_params['image_size'])
     
     # Step 1: Convert cropped rectified coordinates to uncropped coordinates
     x_uncropped = x_rect + roi[0]  # Add ROI x offset
@@ -458,10 +619,24 @@ def transform_single_image_coordinates_from_rectified(rect_params: Dict[str, Any
     # Step 3: Apply inverse rectification rotation
     point_original_normalized = R_rect.T @ point_rect_normalized
     
-    # Step 4: Project back to original image coordinates
-    point_orig_homogeneous = K @ point_original_normalized
-    x_orig = point_orig_homogeneous[0] / point_orig_homogeneous[2]
-    y_orig = point_orig_homogeneous[1] / point_orig_homogeneous[2]
+    # Step 4: Project back to rotated image coordinates
+    if is_vertical:
+        K_use = K_rotated
+    else:
+        K_use = K
+    
+    point_rotated_homogeneous = K_use @ point_original_normalized
+    x_rotated = point_rotated_homogeneous[0] / point_rotated_homogeneous[2]
+    y_rotated = point_rotated_homogeneous[1] / point_rotated_homogeneous[2]
+    
+    # Step 5: Apply inverse rotation if needed
+    if is_vertical:
+        # Apply inverse 90-degree rotation to coordinates
+        # For inverse 90-degree clockwise rotation: (x, y) -> (height - y, x)
+        x_orig = image_size[1] - y_rotated
+        y_orig = x_rotated
+    else:
+        x_orig, y_orig = x_rotated, y_rotated
     
     return (x_orig, y_orig)
 
@@ -471,6 +646,7 @@ def transform_coordinates_to_rectified_vectorized(rect_params: Dict[str, Any],
                                                 coords_img2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
     Vectorized version: Transform arrays of coordinates from original images to rectified images.
+    Pipeline: Original → Rotation (if vertical) → Rectification → Cropping (if alpha=0)
     
     Args:
         rect_params: Rectification parameters
@@ -483,24 +659,44 @@ def transform_coordinates_to_rectified_vectorized(rect_params: Dict[str, Any],
     # Reconstruct rectification parameters
     K1 = np.array(rect_params['K1'])
     K2 = np.array(rect_params['K2'])
+    K1_rotated = np.array(rect_params['K1_rotated'])
+    K2_rotated = np.array(rect_params['K2_rotated'])
     dist1 = np.array(rect_params['dist1'])
     dist2 = np.array(rect_params['dist2'])
     R1_rect = np.array(rect_params['R1_rect'])
     R2_rect = np.array(rect_params['R2_rect'])
     P1 = np.array(rect_params['P1'])
     P2 = np.array(rect_params['P2'])
+    is_vertical = rect_params.get('is_vertical', False)
+    image_size = tuple(rect_params['image_size'])
     
     # Ensure inputs are numpy arrays
     coords_img1 = np.array(coords_img1, dtype=np.float32)
     coords_img2 = np.array(coords_img2, dtype=np.float32)
     
-    # Reshape to (N, 1, 2) for OpenCV
-    points1 = coords_img1.reshape(-1, 1, 2)
-    points2 = coords_img2.reshape(-1, 1, 2)
+    # Step 1: Apply rotation if needed
+    if is_vertical:
+        # Apply 90-degree rotation to coordinates
+        # For 90-degree clockwise rotation: (x, y) -> (y, height - x)
+        coords_img1_rot = np.column_stack([coords_img1[:, 1], image_size[1] - coords_img1[:, 0]])
+        coords_img2_rot = np.column_stack([coords_img2[:, 1], image_size[1] - coords_img2[:, 0]])
+        
+        # Use rotated intrinsic matrices
+        K1_use = K1_rotated
+        K2_use = K2_rotated
+    else:
+        coords_img1_rot = coords_img1
+        coords_img2_rot = coords_img2
+        K1_use = K1
+        K2_use = K2
     
-    # Use OpenCV's undistortPoints for vectorized transformation (assuming no distortion)
-    points1_rect = cv2.undistortPoints(points1, K1, None, R=R1_rect, P=P1)
-    points2_rect = cv2.undistortPoints(points2, K2, None, R=R2_rect, P=P2)
+    # Reshape to (N, 1, 2) for OpenCV
+    points1 = coords_img1_rot.reshape(-1, 1, 2)
+    points2 = coords_img2_rot.reshape(-1, 1, 2)
+    
+    # Step 2: Apply rectification using OpenCV's undistortPoints
+    points1_rect = cv2.undistortPoints(points1, K1_use, None, R=R1_rect, P=P1)
+    points2_rect = cv2.undistortPoints(points2, K2_use, None, R=R2_rect, P=P2)
     
     # Reshape back to (N, 2)
     coords_rect1 = points1_rect.reshape(-1, 2)
@@ -514,6 +710,7 @@ def transform_coordinates_from_rectified_vectorized(rect_params: Dict[str, Any],
                                                   coords_rect2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
     Vectorized version: Transform arrays of coordinates from rectified images back to original images.
+    Pipeline: Cropping → Rectification → Rotation (if vertical) → Original
     
     Args:
         rect_params: Rectification parameters
@@ -526,12 +723,16 @@ def transform_coordinates_from_rectified_vectorized(rect_params: Dict[str, Any],
     # Reconstruct rectification parameters
     K1 = np.array(rect_params['K1'])
     K2 = np.array(rect_params['K2'])
+    K1_rotated = np.array(rect_params['K1_rotated'])
+    K2_rotated = np.array(rect_params['K2_rotated'])
     R1_rect = np.array(rect_params['R1_rect'])
     R2_rect = np.array(rect_params['R2_rect'])
     P1 = np.array(rect_params['P1'])
     P2 = np.array(rect_params['P2'])
     roi1 = rect_params.get('roi1', (0, 0, 0, 0))
     roi2 = rect_params.get('roi2', (0, 0, 0, 0))
+    is_vertical = rect_params.get('is_vertical', False)
+    image_size = tuple(rect_params['image_size'])
     
     # Ensure inputs are numpy arrays
     coords_rect1 = np.array(coords_rect1, dtype=np.float64)
@@ -556,13 +757,30 @@ def transform_coordinates_from_rectified_vectorized(rect_params: Dict[str, Any],
     coords_orig_norm1 = (R1_rect.T @ coords_norm1.T).T
     coords_orig_norm2 = (R2_rect.T @ coords_norm2.T).T
     
-    # Step 5: Project back to original image coordinates
-    coords_orig_hom1 = (K1 @ coords_orig_norm1.T).T
-    coords_orig_hom2 = (K2 @ coords_orig_norm2.T).T
+    # Step 5: Project back to rotated image coordinates
+    if is_vertical:
+        K1_use = K1_rotated
+        K2_use = K2_rotated
+    else:
+        K1_use = K1
+        K2_use = K2
     
-    # Step 6: Convert back to 2D coordinates
-    coords_orig1 = coords_orig_hom1[:, :2] / coords_orig_hom1[:, 2:3]
-    coords_orig2 = coords_orig_hom2[:, :2] / coords_orig_hom2[:, 2:3]
+    coords_rotated_hom1 = (K1_use @ coords_orig_norm1.T).T
+    coords_rotated_hom2 = (K2_use @ coords_orig_norm2.T).T
+    
+    # Convert back to 2D coordinates
+    coords_rotated1 = coords_rotated_hom1[:, :2] / coords_rotated_hom1[:, 2:3]
+    coords_rotated2 = coords_rotated_hom2[:, :2] / coords_rotated_hom2[:, 2:3]
+    
+    # Step 6: Apply inverse rotation if needed
+    if is_vertical:
+        # Apply inverse 90-degree rotation to coordinates
+        # For inverse 90-degree clockwise rotation: (x, y) -> (height - y, x)
+        coords_orig1 = np.column_stack([image_size[1] - coords_rotated1[:, 1], coords_rotated1[:, 0]])
+        coords_orig2 = np.column_stack([image_size[1] - coords_rotated2[:, 1], coords_rotated2[:, 0]])
+    else:
+        coords_orig1 = coords_rotated1
+        coords_orig2 = coords_rotated2
     
     return coords_orig1, coords_orig2
 
@@ -572,6 +790,7 @@ def transform_single_image_coordinates_to_rectified_vectorized(rect_params: Dict
                                                             image_id: int) -> np.ndarray:
     """
     Vectorized version: Transform array of coordinates from a specific original image to its rectified version.
+    Pipeline: Original → Rotation (if vertical) → Rectification → Cropping (if alpha=0)
     
     Args:
         rect_params: Rectification parameters
@@ -584,11 +803,13 @@ def transform_single_image_coordinates_to_rectified_vectorized(rect_params: Dict
     # Reconstruct rectification parameters
     if image_id == 1:
         K = np.array(rect_params['K1'])
+        K_rotated = np.array(rect_params['K1_rotated'])
         dist = np.array(rect_params['dist1'])
         R_rect = np.array(rect_params['R1_rect'])
         P = np.array(rect_params['P1'])
     elif image_id == 2:
         K = np.array(rect_params['K2'])
+        K_rotated = np.array(rect_params['K2_rotated'])
         dist = np.array(rect_params['dist2'])
         R_rect = np.array(rect_params['R2_rect'])
         P = np.array(rect_params['P2'])
@@ -597,12 +818,24 @@ def transform_single_image_coordinates_to_rectified_vectorized(rect_params: Dict
     
     # Ensure input is numpy array
     coords = np.array(coords, dtype=np.float32)
+    is_vertical = rect_params.get('is_vertical', False)
+    image_size = tuple(rect_params['image_size'])
+    
+    # Step 1: Apply rotation if needed
+    if is_vertical:
+        # Apply 90-degree rotation to coordinates
+        # For 90-degree clockwise rotation: (x, y) -> (y, height - x)
+        coords_rot = np.column_stack([coords[:, 1], image_size[1] - coords[:, 0]])
+        K_use = K_rotated
+    else:
+        coords_rot = coords
+        K_use = K
     
     # Reshape to (N, 1, 2) for OpenCV
-    points = coords.reshape(-1, 1, 2)
+    points = coords_rot.reshape(-1, 1, 2)
     
-    # Use OpenCV's undistortPoints for vectorized transformation (assuming no distortion)
-    points_rect = cv2.undistortPoints(points, K, None, R=R_rect, P=P)
+    # Step 2: Apply rectification using OpenCV's undistortPoints
+    points_rect = cv2.undistortPoints(points, K_use, None, R=R_rect, P=P)
     
     # Reshape back to (N, 2)
     coords_rect = points_rect.reshape(-1, 2)
@@ -615,6 +848,7 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
                                                               image_id: int) -> np.ndarray:
     """
     Vectorized version: Transform array of coordinates from a specific rectified image back to its original version.
+    Pipeline: Cropping → Rectification → Rotation (if vertical) → Original
     
     Args:
         rect_params: Rectification parameters
@@ -627,11 +861,13 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     # Reconstruct rectification parameters
     if image_id == 1:
         K = np.array(rect_params['K1'])
+        K_rotated = np.array(rect_params['K1_rotated'])
         R_rect = np.array(rect_params['R1_rect'])
         P = np.array(rect_params['P1'])
         roi = rect_params.get('roi1', (0, 0, 0, 0))
     elif image_id == 2:
         K = np.array(rect_params['K2'])
+        K_rotated = np.array(rect_params['K2_rotated'])
         R_rect = np.array(rect_params['R2_rect'])
         P = np.array(rect_params['P2'])
         roi = rect_params.get('roi2', (0, 0, 0, 0))
@@ -640,6 +876,8 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     
     # Ensure input is numpy array
     coords_rect = np.array(coords_rect, dtype=np.float64)
+    is_vertical = rect_params.get('is_vertical', False)
+    image_size = tuple(rect_params['image_size'])
     
     # Step 1: Convert cropped rectified coordinates to uncropped coordinates
     coords_uncropped = coords_rect + np.array([roi[0], roi[1]])
@@ -655,28 +893,39 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     # Step 4: Apply inverse rectification rotation
     coords_orig_norm = (R_rect.T @ coords_norm.T).T
     
-    # Step 5: Project back to original image coordinates
-    coords_orig_hom = (K @ coords_orig_norm.T).T
+    # Step 5: Project back to rotated image coordinates
+    if is_vertical:
+        K_use = K_rotated
+    else:
+        K_use = K
     
-    # Step 6: Convert back to 2D coordinates
-    coords_orig = coords_orig_hom[:, :2] / coords_orig_hom[:, 2:3]
+    coords_rotated_hom = (K_use @ coords_orig_norm.T).T
+    
+    # Convert back to 2D coordinates
+    coords_rotated = coords_rotated_hom[:, :2] / coords_rotated_hom[:, 2:3]
+    
+    # Step 6: Apply inverse rotation if needed
+    if is_vertical:
+        # Apply inverse 90-degree rotation to coordinates
+        # For inverse 90-degree clockwise rotation: (x, y) -> (height - y, x)
+        coords_orig = np.column_stack([image_size[1] - coords_rotated[:, 1], coords_rotated[:, 0]])
+    else:
+        coords_orig = coords_rotated
     
     return coords_orig
 
 def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, images_path: Path, output_dir: Path) -> Dict[str, Any]:
+    """
+    Initialize rectification with proper left/right ordering.
+    Since we now always do horizontal rectification, we just need to ensure proper ordering.
+    """
     rect_info = compute_stereo_rectification(reconstruction, img1_id, img2_id, images_path, output_dir)
-    if rect_info['type'] == 'vertical':
-        if rect_info['top'] == rect_info['img1_id'] and rect_info['bottom'] == rect_info['img2_id']:
-            return rect_info
-        else:
-            return compute_stereo_rectification(reconstruction, img2_id, img1_id, images_path, output_dir)
-    elif rect_info['type'] == 'horizontal':
-        if rect_info['left'] == rect_info['img1_id'] and rect_info['right'] == rect_info['img2_id']:
-            return rect_info
-        else:
-            return compute_stereo_rectification(reconstruction, img2_id, img1_id, images_path, output_dir)
+    
+    # Since we always do horizontal rectification now, just check left/right ordering
+    if rect_info['left'] == rect_info['img1_id'] and rect_info['right'] == rect_info['img2_id']:
+        return rect_info
     else:
-        raise ValueError(f"Invalid rectification type: {rect_info['type']}")
+        return compute_stereo_rectification(reconstruction, img2_id, img1_id, images_path, output_dir)
 
 
 def main():
@@ -732,12 +981,10 @@ def main():
     print(f"Processing images: {rect_info['img1_name']} (ID: {rect_info['img1_id']}) and {rect_info['img2_name']} (ID: {rect_info['img2_id']})")
     
     print(f"Rectification type: {rect_info['type']}")
-    if rect_info['type'] == 'vertical':
-        print(f"Top image: {rect_info['top']}")
-        print(f"Bottom image: {rect_info['bottom']}")
-    elif rect_info['type'] == 'horizontal':
-        print(f"Left image: {rect_info['left']}")
-        print(f"Right image: {rect_info['right']}")
+    print(f"Left image: {rect_info['left']}")
+    print(f"Right image: {rect_info['right']}")
+    if rect_info.get('is_vertical', False):
+        print("Note: Images were vertically aligned and rotated 90 degrees before rectification")
 
     # Rectify images
     print("Rectifying images...")
