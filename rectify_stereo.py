@@ -49,13 +49,9 @@ def _is_vertically_aligned(R_rel: np.ndarray, t_rel: np.ndarray) -> bool:
     y_dominance = abs(t_rel_normalized[1])
     x_dominance = abs(t_rel_normalized[0])
     
-    # Also check rotation around X-axis (pitch) which is typical for vertical stereo
-    # Extract rotation angles using Rodrigues formula
-    angle_axis = cv2.Rodrigues(R_rel)[0].flatten()
-    pitch_rotation = abs(angle_axis[0])  # Rotation around X-axis
-    
-    # Consider it vertical if Y translation is dominant and there's significant pitch rotation
-    is_vertical = (y_dominance > 0.7) and (pitch_rotation > 0.1)
+    # Consider it vertical if Y translation is dominant
+    # The Y dominance alone is sufficient to determine vertical alignment
+    is_vertical = y_dominance > 0.7
     
     return is_vertical
 
@@ -134,19 +130,33 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     t_rel_rotated = t_rel
     
     if is_vertical:
-        # Apply 90-degree rotation (transpose) to make it horizontal
-        R_rotation = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]])  # 90-degree rotation around Z-axis
+        # For vertical stereo pairs, we need to handle this differently
+        # Instead of rotating the intrinsic matrices, we'll handle the rotation in the image processing
+        # and use a different approach for rectification
         
-        # Transform intrinsic matrices
-        K1_rotated = R_rotation @ K1
-        K2_rotated = R_rotation @ K2
+        # Create a rotation matrix for 90-degree clockwise rotation
+        R_rotation = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]])
+        
+        # Transform the relative pose to make it horizontal
+        R_rel_rotated = R_rotation @ R_rel @ R_rotation.T
+        t_rel_rotated = R_rotation @ t_rel
+        
+        # For the intrinsic matrices, we need to account for the coordinate system change
+        # When we rotate the image 90 degrees clockwise, we swap fx↔fy and cx↔cy
+        # and adjust the principal point for the new image dimensions
+        K1_rotated = np.array([
+            [K1[1,1], 0, K1[1,2]],  # fy, 0, cy
+            [0, K1[0,0], image_size[1] - K1[0,2]],  # 0, fx, height-cx
+            [0, 0, 1]
+        ])
+        K2_rotated = np.array([
+            [K2[1,1], 0, K2[1,2]],  # fy, 0, cy
+            [0, K2[0,0], image_size[1] - K2[0,2]],  # 0, fx, height-cx
+            [0, 0, 1]
+        ])
         
         # Update image size (width and height are swapped)
         image_size_rotated = (image_size[1], image_size[0])
-        
-        # Transform relative pose
-        R_rel_rotated = R_rotation @ R_rel @ R_rotation.T
-        t_rel_rotated = R_rotation @ t_rel
     
     # Stereo rectification using OpenCV functions (now always horizontal)
     R1_rect, R2_rect, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
@@ -399,11 +409,11 @@ def transform_coordinates_to_rectified(rect_params: Dict[str, Any],
     # Step 1: Apply rotation if needed
     if is_vertical:
         # Apply 90-degree rotation to coordinates
-        # For 90-degree clockwise rotation: (x, y) -> (y, height - x)
-        x1_rot = y1
-        y1_rot = image_size[1] - x1
-        x2_rot = y2
-        y2_rot = image_size[1] - x2
+        # For 90-degree clockwise rotation: (x, y) -> (height - y, x)
+        x1_rot = image_size[1] - y1
+        y1_rot = x1
+        x2_rot = image_size[1] - y2
+        y2_rot = x2
         
         # Use rotated intrinsic matrices
         K1_use = K1_rotated
@@ -506,11 +516,11 @@ def transform_coordinates_from_rectified(rect_params: Dict[str, Any],
     # Step 5: Apply inverse rotation if needed
     if is_vertical:
         # Apply inverse 90-degree rotation to coordinates
-        # For inverse 90-degree clockwise rotation: (x, y) -> (height - y, x)
-        x1_orig = image_size[1] - y1_rotated
-        y1_orig = x1_rotated
-        x2_orig = image_size[1] - y2_rotated
-        y2_orig = x2_rotated
+        # For inverse 90-degree clockwise rotation: (x, y) -> (y, height - x)
+        x1_orig = y1_rotated
+        y1_orig = image_size[1] - x1_rotated
+        x2_orig = y2_rotated
+        y2_orig = image_size[1] - x2_rotated
     else:
         x1_orig, y1_orig = x1_rotated, y1_rotated
         x2_orig, y2_orig = x2_rotated, y2_rotated
@@ -556,9 +566,9 @@ def transform_single_image_coordinates_to_rectified(rect_params: Dict[str, Any],
     # Step 1: Apply rotation if needed
     if is_vertical:
         # Apply 90-degree rotation to coordinates
-        # For 90-degree clockwise rotation: (x, y) -> (y, height - x)
-        x_rot = y
-        y_rot = image_size[1] - x
+        # For 90-degree clockwise rotation: (x, y) -> (height - y, x)
+        x_rot = image_size[1] - y
+        y_rot = x
         K_use = K_rotated
     else:
         x_rot, y_rot = x, y
@@ -632,9 +642,9 @@ def transform_single_image_coordinates_from_rectified(rect_params: Dict[str, Any
     # Step 5: Apply inverse rotation if needed
     if is_vertical:
         # Apply inverse 90-degree rotation to coordinates
-        # For inverse 90-degree clockwise rotation: (x, y) -> (height - y, x)
-        x_orig = image_size[1] - y_rotated
-        y_orig = x_rotated
+        # For inverse 90-degree clockwise rotation: (x, y) -> (y, height - x)
+        x_orig = y_rotated
+        y_orig = image_size[1] - x_rotated
     else:
         x_orig, y_orig = x_rotated, y_rotated
     
@@ -677,9 +687,9 @@ def transform_coordinates_to_rectified_vectorized(rect_params: Dict[str, Any],
     # Step 1: Apply rotation if needed
     if is_vertical:
         # Apply 90-degree rotation to coordinates
-        # For 90-degree clockwise rotation: (x, y) -> (y, height - x)
-        coords_img1_rot = np.column_stack([coords_img1[:, 1], image_size[1] - coords_img1[:, 0]])
-        coords_img2_rot = np.column_stack([coords_img2[:, 1], image_size[1] - coords_img2[:, 0]])
+        # For 90-degree clockwise rotation: (x, y) -> (height - y, x)
+        coords_img1_rot = np.column_stack([image_size[1] - coords_img1[:, 1], coords_img1[:, 0]])
+        coords_img2_rot = np.column_stack([image_size[1] - coords_img2[:, 1], coords_img2[:, 0]])
         
         # Use rotated intrinsic matrices
         K1_use = K1_rotated
@@ -775,9 +785,9 @@ def transform_coordinates_from_rectified_vectorized(rect_params: Dict[str, Any],
     # Step 6: Apply inverse rotation if needed
     if is_vertical:
         # Apply inverse 90-degree rotation to coordinates
-        # For inverse 90-degree clockwise rotation: (x, y) -> (height - y, x)
-        coords_orig1 = np.column_stack([image_size[1] - coords_rotated1[:, 1], coords_rotated1[:, 0]])
-        coords_orig2 = np.column_stack([image_size[1] - coords_rotated2[:, 1], coords_rotated2[:, 0]])
+        # For inverse 90-degree clockwise rotation: (x, y) -> (y, height - x)
+        coords_orig1 = np.column_stack([coords_rotated1[:, 1], image_size[1] - coords_rotated1[:, 0]])
+        coords_orig2 = np.column_stack([coords_rotated2[:, 1], image_size[1] - coords_rotated2[:, 0]])
     else:
         coords_orig1 = coords_rotated1
         coords_orig2 = coords_rotated2
@@ -824,8 +834,8 @@ def transform_single_image_coordinates_to_rectified_vectorized(rect_params: Dict
     # Step 1: Apply rotation if needed
     if is_vertical:
         # Apply 90-degree rotation to coordinates
-        # For 90-degree clockwise rotation: (x, y) -> (y, height - x)
-        coords_rot = np.column_stack([coords[:, 1], image_size[1] - coords[:, 0]])
+        # For 90-degree clockwise rotation: (x, y) -> (height - y, x)
+        coords_rot = np.column_stack([image_size[1] - coords[:, 1], coords[:, 0]])
         K_use = K_rotated
     else:
         coords_rot = coords
@@ -907,8 +917,8 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     # Step 6: Apply inverse rotation if needed
     if is_vertical:
         # Apply inverse 90-degree rotation to coordinates
-        # For inverse 90-degree clockwise rotation: (x, y) -> (height - y, x)
-        coords_orig = np.column_stack([image_size[1] - coords_rotated[:, 1], coords_rotated[:, 0]])
+        # For inverse 90-degree clockwise rotation: (x, y) -> (y, height - x)
+        coords_orig = np.column_stack([coords_rotated[:, 1], image_size[1] - coords_rotated[:, 0]])
     else:
         coords_orig = coords_rotated
     
@@ -928,16 +938,156 @@ def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, 
         return compute_stereo_rectification(reconstruction, img2_id, img1_id, images_path, output_dir)
 
 
+def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, 
+                       images_path: Path, output_dir: Path) -> bool:
+    """
+    Process a single stereo pair for rectification.
+    
+    Args:
+        reconstruction: ColmapReconstruction object
+        img1_id: First image ID
+        img2_id: Second image ID
+        images_path: Path to images directory
+        output_dir: Output directory for this pair
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Create pair-specific output directory
+        pair_dir = output_dir / f"pair_{img1_id:03d}_{img2_id:03d}"
+        pair_dir.mkdir(exist_ok=True)
+        
+        print(f"Processing pair: {img1_id} - {img2_id}")
+        
+        # Compute rectification
+        rect_info = initalize_rectification(reconstruction, img1_id, img2_id, images_path, pair_dir)
+        
+        print(f"  Images: {rect_info['img1_name']} (ID: {rect_info['img1_id']}) and {rect_info['img2_name']} (ID: {rect_info['img2_id']})")
+        print(f"  Rectification type: {rect_info['type']}")
+        print(f"  Left image: {rect_info['left']}")
+        print(f"  Right image: {rect_info['right']}")
+        if rect_info.get('is_vertical', False):
+            print("  Note: Images were vertically aligned and rotated 90 degrees before rectification")
+        
+        # Rectify images
+        print("  Rectifying images...")
+        rect1_img, rect2_img = rectify_images(rect_info)
+        
+        # Save rectified images
+        cv2.imwrite(rect_info['rect1_path'], rect1_img)
+        cv2.imwrite(rect_info['rect2_path'], rect2_img)
+        
+        # Save rectification info
+        rect_info_path = pair_dir / 'rectification.json'
+        
+        # Convert numpy types to Python native types for JSON serialization
+        rect_info_json = {}
+        for key, value in rect_info.items():
+            if isinstance(value, np.ndarray):
+                rect_info_json[key] = value.tolist()
+            elif isinstance(value, np.bool_):
+                rect_info_json[key] = bool(value)
+            elif isinstance(value, np.integer):
+                rect_info_json[key] = int(value)
+            elif isinstance(value, np.floating):
+                rect_info_json[key] = float(value)
+            else:
+                rect_info_json[key] = value
+        
+        with open(rect_info_path, 'w') as f:
+            json.dump(rect_info_json, f, indent=2)
+        
+        # Save intrinsics.txt file
+        intrinsics_path = pair_dir / 'intrinsics.txt'
+        
+        # Extract rectified K matrix from projection matrices
+        P1 = np.array(rect_info['P1'])
+        P2 = np.array(rect_info['P2'])
+        
+        # The rectified K matrix is the same for both cameras (K_rect = P1[:, :3] = P2[:, :3])
+        K_rect = P1[:, :3]
+        
+        # Calculate baseline from relative translation
+        t_rel = np.array(rect_info['t_rel'])
+        baseline = np.linalg.norm(t_rel)
+        
+        with open(intrinsics_path, 'w') as f:
+            # Write rectified K matrix
+            f.write(f"{K_rect[0,0]:.6f} {K_rect[0,1]:.6f} {K_rect[0,2]:.6f} {K_rect[1,0]:.6f} {K_rect[1,1]:.6f} {K_rect[1,2]:.6f} {K_rect[2,0]:.6f} {K_rect[2,1]:.6f} {K_rect[2,2]:.6f}\n")
+            # Write baseline
+            f.write(f"{baseline:.6f}\n")
+        
+        print(f"  ✓ Pair {img1_id}-{img2_id} completed successfully")
+        return True
+        
+    except Exception as e:
+        print(f"  ✗ Error processing pair {img1_id}-{img2_id}: {e}")
+        return False
+
+
+def process_all_pairs(reconstruction: ColmapReconstruction, images_path: Path, output_dir: Path) -> None:
+    """
+    Process all stereo pairs from the reconstruction.
+    
+    Args:
+        reconstruction: ColmapReconstruction object
+        images_path: Path to images directory
+        output_dir: Output directory
+    """
+    print("Getting best stereo pairs from reconstruction...")
+    
+    # Get all pairs from the reconstruction
+    pairs = reconstruction.get_best_pairs()
+    
+    # Count total pairs
+    total_pairs = 0
+    for img_id, partner_ids in pairs.items():
+        total_pairs += len(partner_ids)
+    
+    print(f"Found {total_pairs} stereo pairs to process")
+    
+    if total_pairs == 0:
+        print("No stereo pairs found in the reconstruction")
+        return
+    
+    # Process each pair
+    successful_pairs = 0
+    failed_pairs = 0
+    
+    for img_id, partner_ids in pairs.items():
+        for partner_id in partner_ids:
+            success = process_single_pair(reconstruction, img_id, partner_id, images_path, output_dir)
+            if success:
+                successful_pairs += 1
+            else:
+                failed_pairs += 1
+    
+    print(f"\nProcessing complete!")
+    print(f"Successful pairs: {successful_pairs}")
+    print(f"Failed pairs: {failed_pairs}")
+    print(f"Total pairs: {total_pairs}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Stereo rectification for COLMAP reconstructions')
     parser.add_argument('-s', '--scene_folder', required=True, 
                        help='Path to scene folder containing sparse/ and images/')
     parser.add_argument('-o', '--out_folder', required=True,
                        help='Output folder name (will be created under scene_folder)')
-    parser.add_argument('img_id1', type=int, help='First image ID')
-    parser.add_argument('img_id2', type=int, help='Second image ID')
+    parser.add_argument('--all-pairs', action='store_true',
+                       help='Process all stereo pairs from the reconstruction')
+    parser.add_argument('img_id1', type=int, nargs='?', help='First image ID (required if not using --all-pairs)')
+    parser.add_argument('img_id2', type=int, nargs='?', help='Second image ID (required if not using --all-pairs)')
     
     args = parser.parse_args()
+    
+    # Validate arguments
+    if not args.all_pairs and (args.img_id1 is None or args.img_id2 is None):
+        parser.error("Either --all-pairs must be specified, or both img_id1 and img_id2 must be provided")
+    
+    if args.all_pairs and (args.img_id1 is not None or args.img_id2 is not None):
+        parser.error("Cannot specify both --all-pairs and individual image IDs")
     
     # Validate paths
     scene_folder = Path(args.scene_folder)
@@ -968,40 +1118,29 @@ def main():
     output_dir = scene_folder / args.out_folder
     os.makedirs(output_dir, exist_ok=True)
 
-    # Validate image IDs
-    if not reconstruction.has_image(args.img_id1):
-        print(f"Error: Image ID {args.img_id1} not found in reconstruction")
-        sys.exit(1)
-    
-    if not reconstruction.has_image(args.img_id2):
-        print(f"Error: Image ID {args.img_id2} not found in reconstruction")
-        sys.exit(1)
-    
-    rect_info = initalize_rectification(reconstruction, args.img_id1, args.img_id2, images_path, output_dir)
-    print(f"Processing images: {rect_info['img1_name']} (ID: {rect_info['img1_id']}) and {rect_info['img2_name']} (ID: {rect_info['img2_id']})")
-    
-    print(f"Rectification type: {rect_info['type']}")
-    print(f"Left image: {rect_info['left']}")
-    print(f"Right image: {rect_info['right']}")
-    if rect_info.get('is_vertical', False):
-        print("Note: Images were vertically aligned and rotated 90 degrees before rectification")
-
-    # Rectify images
-    print("Rectifying images...")
-    rect1_img, rect2_img = rectify_images(rect_info)
-
-    cv2.imwrite(rect_info['rect1_path'], rect1_img)
-    cv2.imwrite(rect_info['rect2_path'], rect2_img)
-
-    # Save rectification info
-    rect_info_path = output_dir / 'rectification.json'
-    with open(rect_info_path, 'w') as f:
-        json.dump(rect_info, f, indent=2)
-    
-    print(f"Rectification complete!")
-    print(f"Rectified images saved to: {output_dir}")
-    print(f"Rectification info saved to: {rect_info_path}")
-    print(f"Rectification type: {rect_info['type']}")
+    if args.all_pairs:
+        # Process all stereo pairs
+        process_all_pairs(reconstruction, images_path, output_dir)
+    else:
+        # Process single pair
+        # Validate image IDs
+        if not reconstruction.has_image(args.img_id1):
+            print(f"Error: Image ID {args.img_id1} not found in reconstruction")
+            sys.exit(1)
+        
+        if not reconstruction.has_image(args.img_id2):
+            print(f"Error: Image ID {args.img_id2} not found in reconstruction")
+            sys.exit(1)
+        
+        # Process single pair
+        success = process_single_pair(reconstruction, args.img_id1, args.img_id2, images_path, output_dir)
+        
+        if success:
+            print(f"\nRectification complete!")
+            print(f"Output saved to: {output_dir}")
+        else:
+            print(f"\nRectification failed!")
+            sys.exit(1)
 
 if __name__ == '__main__':
     main()
