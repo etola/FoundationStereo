@@ -335,9 +335,6 @@ def rectify_images(rect_params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]
         Tuple of (rectified_img1, rectified_img2)
     """
     # Load images
-    # img1 = cv2.imread(rect_params['img1_path'])
-    # img2 = cv2.imread(rect_params['img2_path'])
-
     img1 = imageio.imread(rect_params['img1_path'])
     img2 = imageio.imread(rect_params['img2_path'])
 

@@ -397,8 +397,8 @@ def process_single_pair(
         t2 = reconstruction.get_image_cam_from_world(img2_id).translation
         
         # Load original images for colors
-        img1_orig = cv2.imread(str(rect_params['img1_path']))
-        img2_orig = cv2.imread(str(rect_params['img2_path']))
+        img1_orig = imageio.imread(rect_params['img1_path'])
+        img2_orig = imageio.imread(rect_params['img2_path'])
         
         # Compute point cloud
         pcd = compute_point_cloud_from_matching_coords(
