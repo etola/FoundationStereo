@@ -192,12 +192,16 @@ def compute_matching_coordinates_from_disparity(
     # Create coordinate grids
     yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
     
+    # Remove invalid points
+    valid_mask = np.isfinite(disparity.flatten())
+    
     # For horizontal rectification: right_x = left_x - disparity
     left_coords = np.stack([xx.flatten(), yy.flatten()], axis=1)
     right_coords = np.stack([xx.flatten() - disparity.flatten(), yy.flatten()], axis=1)
     
-    # Remove invalid points
-    valid_mask = np.isfinite(disparity.flatten())
+    # Filter out points where right_x would be negative
+    valid_mask = valid_mask & (right_coords[:, 0] >= 0)
+
     left_coords = left_coords[valid_mask]
     right_coords = right_coords[valid_mask]
     
@@ -487,7 +491,6 @@ def main():
         
         if success:
             successful_pairs += 1
-        break
     
     logging.info(f"\nCompleted processing {successful_pairs}/{len(pair_list)} pairs successfully")
     logging.info(f"Results saved to {output_dir}")
