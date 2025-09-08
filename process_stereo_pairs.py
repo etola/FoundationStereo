@@ -219,7 +219,7 @@ def compute_point_cloud_from_matching_coords(
     t2: np.ndarray,
     left_image: np.ndarray,
     right_image: np.ndarray,
-    z_far: float = 10.0
+    args: Any
 ) -> o3d.geometry.PointCloud:
     """
     Compute point cloud from matching coordinates using stereo triangulation.
@@ -258,7 +258,7 @@ def compute_point_cloud_from_matching_coords(
     points_3d = points_3d.T  # Shape: (N, 3)
     
     # Filter points by depth bounds
-    valid_depth_mask = (points_3d[:, 2] > 0) & (points_3d[:, 2] <= z_far)
+    valid_depth_mask = (points_3d[:, 2] > 0) & (points_3d[:, 2] <= args.z_far)
     points_3d = points_3d[valid_depth_mask]
     valid_left_coords = left_coords[valid_depth_mask]
     
@@ -284,6 +284,12 @@ def compute_point_cloud_from_matching_coords(
     
     # Create point cloud
     pcd = toOpen3dCloud(points_3d, colors)
+
+    if args.denoise_cloud:
+        cl, ind = pcd.remove_radius_outlier(nb_points=args.denoise_nb_points, radius=args.denoise_radius)
+        inlier_cloud = pcd.select_by_index(ind)
+        pcd = inlier_cloud
+
     return pcd
 
 
@@ -374,7 +380,7 @@ def process_single_pair(
             img1_coords_orig, img2_coords_orig,
             K1, K2, R1, R2, t1, t2,
             img1_orig, img2_orig,
-            args.z_far
+            args
         )
         
         # Save point cloud
@@ -402,7 +408,7 @@ def main():
                        type=str, help='Pretrained model path')
     parser.add_argument('--hiera', default=0, type=int,
                        help='Hierarchical inference (only needed for high-resolution images (>1K))')
-    parser.add_argument('--z_far', default=10, type=float,
+    parser.add_argument('--z_far', default=100, type=float,
                        help='Maximum depth to clip in point cloud')
     parser.add_argument('--valid_iters', type=int, default=32,
                        help='Number of flow-field updates during forward pass')
@@ -410,7 +416,10 @@ def main():
                        help='Minimum number of 3D points for pair selection')
     parser.add_argument('--pairs_per_image', type=int, default=1,
                        help='Number of pairs to select per image')
-    
+    parser.add_argument('--denoise_nb_points', type=int, default=30, help='number of points to consider for radius outlier removal')
+    parser.add_argument('--denoise_radius', type=float, default=0.03, help='radius to use for outlier removal')
+    parser.add_argument('--denoise_cloud', type=int, default=1, help='whether to denoise the point cloud')
+
     args = parser.parse_args()
     
     # Validate paths

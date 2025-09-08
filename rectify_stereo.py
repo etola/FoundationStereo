@@ -1050,12 +1050,15 @@ def process_all_pairs(reconstruction: ColmapReconstruction, images_path: Path, o
     
     # Get all pairs from the reconstruction
     pairs = reconstruction.get_best_pairs()
-    
-    # Count total pairs
-    total_pairs = 0
-    for img_id, partner_ids in pairs.items():
-        total_pairs += len(partner_ids)
-    
+
+    # Convert pairs to list of tuples
+    pair_list = []
+    for img1_id, partner_ids in pairs.items():
+        for img2_id in partner_ids:
+            if img1_id < img2_id:  # Avoid duplicates
+                pair_list.append((img1_id, img2_id))
+
+    total_pairs = len(pair_list)
     print(f"Found {total_pairs} stereo pairs to process")
     
     if total_pairs == 0:
@@ -1067,14 +1070,13 @@ def process_all_pairs(reconstruction: ColmapReconstruction, images_path: Path, o
     failed_pairs = 0
     pair_index = 0
     
-    for img_id, partner_ids in pairs.items():
-        for partner_id in partner_ids:
-            success = process_single_pair(reconstruction, img_id, partner_id, images_path, output_dir, pair_index)
-            if success:
-                successful_pairs += 1
-            else:
-                failed_pairs += 1
-            pair_index += 1
+    for i, (img1_id, img2_id) in enumerate(pair_list):
+        success = process_single_pair(reconstruction, img1_id, img2_id, images_path, output_dir, pair_index)
+        if success:
+            successful_pairs += 1
+        else:
+            failed_pairs += 1
+        pair_index += 1
     
     print(f"\nProcessing complete!")
     print(f"Successful pairs: {successful_pairs}")
