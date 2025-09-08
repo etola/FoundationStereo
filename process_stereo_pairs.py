@@ -174,7 +174,7 @@ def remove_invisible_points(disparity: np.ndarray) -> np.ndarray:
     return disparity
 
 
-def compute_matching_coordinates_from_disparity_horizontal(
+def compute_matching_coordinates_from_disparity(
     disparity: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -193,8 +193,8 @@ def compute_matching_coordinates_from_disparity_horizontal(
     yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
     
     # For horizontal rectification: right_x = left_x - disparity
-    right_coords = np.stack([xx.flatten(), yy.flatten()], axis=1)
-    left_coords = np.stack([xx.flatten() - disparity.flatten(), yy.flatten()], axis=1)
+    left_coords = np.stack([xx.flatten(), yy.flatten()], axis=1)
+    right_coords = np.stack([xx.flatten() - disparity.flatten(), yy.flatten()], axis=1)
     
     # Remove invalid points
     valid_mask = np.isfinite(disparity.flatten())
@@ -202,36 +202,6 @@ def compute_matching_coordinates_from_disparity_horizontal(
     right_coords = right_coords[valid_mask]
     
     return left_coords, right_coords
-
-
-def compute_matching_coordinates_from_disparity_vertical(
-    disparity: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Compute matching coordinate arrays from vertical disparity information.
-    For vertical rectification: bottom_y = top_y + disparity
-    
-    Args:
-        disparity: Disparity map (at scaled resolution)
-        
-    Returns:
-        Tuple of (top_coords, bottom_coords) where each is Nx2 array (at scaled resolution)
-    """
-    H, W = disparity.shape
-    
-    # Create coordinate grids
-    yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
-    
-    # For vertical rectification: bottom_y = top_y + disparity
-    top_coords = np.stack([xx.flatten(), yy.flatten()], axis=1)
-    bottom_coords = np.stack([xx.flatten(), yy.flatten() + disparity.flatten()], axis=1)
-    
-    # Remove invalid points
-    valid_mask = np.isfinite(disparity.flatten())
-    top_coords = top_coords[valid_mask]
-    bottom_coords = bottom_coords[valid_mask]
-    
-    return top_coords, bottom_coords
 
 
 def compute_point_cloud_from_matching_coords(
@@ -303,10 +273,7 @@ def compute_point_cloud_from_matching_coords(
     
     # Extract colors for valid coordinates
     if np.any(valid_coords_mask):
-        bgr_colors = left_image[y_coords[valid_coords_mask], x_coords[valid_coords_mask]]
-        # Convert BGR to RGB
-        rgb_colors = bgr_colors[:, [2, 1, 0]]  # Reverse the channel order
-        colors[valid_coords_mask] = rgb_colors
+        colors[valid_coords_mask] = left_image[y_coords[valid_coords_mask], x_coords[valid_coords_mask]]
     
     if len(points_3d) == 0:
         return o3d.geometry.PointCloud()
@@ -362,21 +329,19 @@ def process_single_pair(
 
 
         # Process with FoundationStereo (returns disparity at scaled resolution)
-        disparity_horizontal = process_stereo_pair_with_foundation_stereo(
+        disparity = process_stereo_pair_with_foundation_stereo(
             rect1_img, rect2_img, model, args
         )
         
         # Visualize disparity
-        vis = vis_disparity(disparity_horizontal)
+        vis = vis_disparity(disparity)
         imageio.imwrite(str(output_dir / "disparity_visualization.png"), vis)
 
         # Remove invisible points
         # disparity_horizontal = remove_invisible_points(disparity_horizontal)
         
         # Compute matching coordinates from disparity (at scaled resolution)
-        img1_coords, img2_coords = compute_matching_coordinates_from_disparity_horizontal(
-            disparity_horizontal
-        )
+        img1_coords, img2_coords = compute_matching_coordinates_from_disparity(disparity)
         
         # Scale coordinates up to rectified image resolution
         scale = args.scale
