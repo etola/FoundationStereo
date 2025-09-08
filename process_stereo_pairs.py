@@ -18,8 +18,8 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
 import numpy as np
+from typing import Dict, List, Tuple, Any
 import cv2
 import torch
 import open3d as o3d
@@ -39,6 +39,32 @@ from rectify_stereo import (
 from core.utils.utils import InputPadder
 from Utils import *
 from core.foundation_stereo import *
+
+
+def convert_numpy_types_for_json(data: Any) -> Any:
+    """
+    Convert numpy types to Python native types for JSON serialization.
+    
+    Args:
+        data: Data that may contain numpy types
+        
+    Returns:
+        Data with numpy types converted to Python native types
+    """
+    if isinstance(data, np.ndarray):
+        return data.tolist()
+    elif isinstance(data, np.bool_):
+        return bool(data)
+    elif isinstance(data, np.integer):
+        return int(data)
+    elif isinstance(data, np.floating):
+        return float(data)
+    elif isinstance(data, dict):
+        return {key: convert_numpy_types_for_json(value) for key, value in data.items()}
+    elif isinstance(data, (list, tuple)):
+        return [convert_numpy_types_for_json(item) for item in data]
+    else:
+        return data
 
 
 def transpose_image_counter_clockwise(image: np.ndarray) -> np.ndarray:
@@ -106,11 +132,7 @@ def process_stereo_pair_with_foundation_stereo(
     left_scaled = cv2.resize(left_image, None, fx=scale, fy=scale)
     right_scaled = cv2.resize(right_image, None, fx=scale, fy=scale)
     H_scaled, W_scaled = left_scaled.shape[:2]
-    
-    # Convert BGR to RGB for FoundationStereo model
-    left_scaled = cv2.cvtColor(left_scaled, cv2.COLOR_BGR2RGB)
-    right_scaled = cv2.cvtColor(right_scaled, cv2.COLOR_BGR2RGB)
-    
+        
     # Convert to tensors
     left_tensor = torch.as_tensor(left_scaled).cuda().float()[None].permute(0, 3, 1, 2)
     right_tensor = torch.as_tensor(right_scaled).cuda().float()[None].permute(0, 3, 1, 2)
@@ -171,8 +193,8 @@ def compute_matching_coordinates_from_disparity_horizontal(
     yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
     
     # For horizontal rectification: right_x = left_x - disparity
-    left_coords = np.stack([xx.flatten(), yy.flatten()], axis=1)
-    right_coords = np.stack([xx.flatten() + disparity.flatten(), yy.flatten()], axis=1)
+    right_coords = np.stack([xx.flatten(), yy.flatten()], axis=1)
+    left_coords = np.stack([xx.flatten() - disparity.flatten(), yy.flatten()], axis=1)
     
     # Remove invalid points
     valid_mask = np.isfinite(disparity.flatten())
@@ -317,104 +339,53 @@ def process_single_pair(
         True if successful, False otherwise
     """
     try:
-        # Get image names
-        img1_name = reconstruction.get_image_name(img1_id)
-        img2_name = reconstruction.get_image_name(img2_id)
-        
-        logging.info(f"Processing pair: {img1_name} (ID: {img1_id}) and {img2_name} (ID: {img2_id})")
-        
-        # Compute stereo rectification
-        rect_params = compute_stereo_rectification(reconstruction, img1_id, img2_id)
-        
-        # Get rectification type and update rect_params with image IDs
-        rect_type = determine_rectification_type(rect_params, img1_id, img2_id)
-        
-        logging.info(f"Rectification type: {rect_type}")
-        
-        # Get image paths
         images_path = output_dir.parent.parent / 'images'
-        img1_path = images_path / img1_name
-        img2_path = images_path / img2_name
+
+        # Compute stereo rectification
+        rect_params = compute_stereo_rectification(reconstruction, img1_id, img2_id, images_path, output_dir)
         
+        # Convert numpy types to Python native types for JSON serialization
+        rect_params_json = convert_numpy_types_for_json(rect_params)
+        
+        with open(output_dir / 'rectification.json', 'w') as f:
+            json.dump(rect_params_json, f, indent=2)
+
+        logging.info(f"Processing pair: {rect_params['img1_name']} (ID: {img1_id}) and {rect_params['img2_name']} (ID: {img2_id})")
+
         # Rectify images
-        rect1_path, rect2_path = rectify_images(
-            str(img1_path), str(img2_path), rect_params, str(output_dir)
+        rect1_img, rect2_img = rectify_images(rect_params)
+
+        left_img_path = output_dir / 'left.jpg'
+        right_img_path = output_dir / 'right.jpg'
+        imageio.imwrite(str(left_img_path), rect1_img)
+        imageio.imwrite(str(right_img_path), rect2_img)
+
+
+        # Process with FoundationStereo (returns disparity at scaled resolution)
+        disparity_horizontal = process_stereo_pair_with_foundation_stereo(
+            rect1_img, rect2_img, model, args
         )
         
-        # Load rectified images
-        left_rect = cv2.imread(rect1_path)
-        right_rect = cv2.imread(rect2_path)
+        # Visualize disparity
+        vis = vis_disparity(disparity_horizontal)
+        imageio.imwrite(str(output_dir / "disparity_visualization.png"), vis)
+
+        # Remove invisible points
+        # disparity_horizontal = remove_invisible_points(disparity_horizontal)
         
-        if rect_type == 'vertical':
-            logging.info("Vertical rectification detected - transposing images to horizontal layout")
-            
-            # Transpose images counter-clockwise to make them horizontal
-            left_horizontal = transpose_image_counter_clockwise(left_rect)
-            right_horizontal = transpose_image_counter_clockwise(right_rect)
-            
-            # Save transposed images for verification
-            cv2.imwrite(str(output_dir / "left_transposed.jpg"), left_horizontal)
-            cv2.imwrite(str(output_dir / "right_transposed.jpg"), right_horizontal)
-            
-            # Process with FoundationStereo (returns disparity at scaled resolution)
-            disparity_horizontal = process_stereo_pair_with_foundation_stereo(
-                left_horizontal, right_horizontal, model, args
-            )
-            
-            # Transpose disparity back to vertical layout
-            disparity_vertical = transpose_disparity_clockwise(disparity_horizontal)
-            
-            # Debug: Print disparity dimensions
-            print(f"Disparity horizontal dimensions: {disparity_horizontal.shape} (H x W)")
-            print(f"Disparity vertical dimensions: {disparity_vertical.shape} (H x W)")
-            
-            # Save disparity map
-            np.save(str(output_dir / "disparity_vertical.npy"), disparity_vertical)
-            
-            # Visualize disparity
-            vis = vis_disparity(disparity_vertical)
-            print(f"Visualization dimensions: {vis.shape} (H x W x C)")
-            cv2.imwrite(str(output_dir / "disparity_visualization.jpg"), vis)
-            
-            # Remove invisible points
-            # disparity_vertical = remove_invisible_points(disparity_vertical)
-            
-            # Compute matching coordinates from disparity (at scaled resolution)
-            left_coords, right_coords = compute_matching_coordinates_from_disparity_vertical(
-                disparity_vertical
-            )
-            
-        else:  # horizontal rectification
-            logging.info("Horizontal rectification detected - using images directly")
-            
-            # Process with FoundationStereo (returns disparity at scaled resolution)
-            disparity_horizontal = process_stereo_pair_with_foundation_stereo(
-                left_rect, right_rect, model, args
-            )
-            
-            # Save disparity map
-            np.save(str(output_dir / "disparity_horizontal.npy"), disparity_horizontal)
-            
-            # Visualize disparity
-            vis = vis_disparity(disparity_horizontal)
-            cv2.imwrite(str(output_dir / "disparity_visualization.jpg"), vis)
-            
-            # Remove invisible points
-            # disparity_horizontal = remove_invisible_points(disparity_horizontal)
-            
-            # Compute matching coordinates from disparity (at scaled resolution)
-            left_coords, right_coords = compute_matching_coordinates_from_disparity_horizontal(
-                disparity_horizontal
-            )
+        # Compute matching coordinates from disparity (at scaled resolution)
+        img1_coords, img2_coords = compute_matching_coordinates_from_disparity_horizontal(
+            disparity_horizontal
+        )
         
         # Scale coordinates up to rectified image resolution
         scale = args.scale
-        left_coords_rect = left_coords / scale
-        right_coords_rect = right_coords / scale
+        img1_coords_rect = img1_coords / scale
+        img2_coords_rect = img2_coords / scale
         
         # Transform coordinates back to original image space
-        left_coords_orig, right_coords_orig = transform_coordinates_from_rectified_vectorized(
-            rect_params, left_coords_rect, right_coords_rect
+        img1_coords_orig, img2_coords_orig = transform_coordinates_from_rectified_vectorized(
+            rect_params, img1_coords_rect, img2_coords_rect
         )
         
         # Get camera parameters for triangulation
@@ -426,38 +397,20 @@ def process_single_pair(
         t2 = reconstruction.get_image_cam_from_world(img2_id).translation
         
         # Load original images for colors
-        left_orig = cv2.imread(str(img1_path))
-        right_orig = cv2.imread(str(img2_path))
+        img1_orig = cv2.imread(str(rect_params['img1_path']))
+        img2_orig = cv2.imread(str(rect_params['img2_path']))
         
         # Compute point cloud
         pcd = compute_point_cloud_from_matching_coords(
-            left_coords_orig, right_coords_orig,
+            img1_coords_orig, img2_coords_orig,
             K1, K2, R1, R2, t1, t2,
-            left_orig, right_orig,
+            img1_orig, img2_orig,
             args.z_far
         )
         
         # Save point cloud
         o3d.io.write_point_cloud(str(output_dir / "point_cloud.ply"), pcd)
         logging.info(f"Point cloud saved to {output_dir / 'point_cloud.ply'}")
-        
-        # Save rectification info
-        rect_info = {
-            'image_ids': [img1_id, img2_id],
-            'image_names': [img1_name, img2_name],
-            'rectification_type': rect_type,
-            'rectification_parameters': rect_params
-        }
-        
-        if rect_type == 'vertical':
-            rect_info['top'] = reconstruction.get_image_name(rect_params['top'])
-            rect_info['bottom'] = reconstruction.get_image_name(rect_params['bottom'])
-        else:
-            rect_info['left'] = reconstruction.get_image_name(rect_params['left'])
-            rect_info['right'] = reconstruction.get_image_name(rect_params['right'])
-        
-        with open(output_dir / 'rectification.json', 'w') as f:
-            json.dump(rect_info, f, indent=2)
         
         logging.info(f"Successfully processed pair {img1_id}-{img2_id}")
         return True
@@ -569,6 +522,7 @@ def main():
         
         if success:
             successful_pairs += 1
+        break
     
     logging.info(f"\nCompleted processing {successful_pairs}/{len(pair_list)} pairs successfully")
     logging.info(f"Results saved to {output_dir}")

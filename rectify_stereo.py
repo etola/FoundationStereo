@@ -19,6 +19,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Tuple, Dict, Any
+import imageio
 
 import cv2
 import numpy as np
@@ -334,9 +335,12 @@ def rectify_images(rect_params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]
         Tuple of (rectified_img1, rectified_img2)
     """
     # Load images
-    img1 = cv2.imread(rect_params['img1_path'])
-    img2 = cv2.imread(rect_params['img2_path'])
-    
+    # img1 = cv2.imread(rect_params['img1_path'])
+    # img2 = cv2.imread(rect_params['img2_path'])
+
+    img1 = imageio.imread(rect_params['img1_path'])
+    img2 = imageio.imread(rect_params['img2_path'])
+
     if img1 is None:
         raise ValueError(f"Could not load image: {rect_params['img1_path']}")
     if img2 is None:
@@ -981,8 +985,8 @@ def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2
         # Save rectified images as left.jpg and right.jpg
         left_img_path = pair_dir / 'left.jpg'
         right_img_path = pair_dir / 'right.jpg'
-        cv2.imwrite(str(left_img_path), rect1_img)
-        cv2.imwrite(str(right_img_path), rect2_img)
+        imageio.imwrite(str(left_img_path), rect1_img)
+        imageio.imwrite(str(right_img_path), rect2_img)
         
         # Update rectification info with new image paths
         rect_info['rect1_path'] = str(left_img_path)
