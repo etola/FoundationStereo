@@ -939,7 +939,7 @@ def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, 
 
 
 def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, 
-                       images_path: Path, output_dir: Path) -> bool:
+                       images_path: Path, output_dir: Path, pair_index: int = None) -> bool:
     """
     Process a single stereo pair for rectification.
     
@@ -949,13 +949,17 @@ def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2
         img2_id: Second image ID
         images_path: Path to images directory
         output_dir: Output directory for this pair
+        pair_index: Optional pair index for consecutive naming (pair_00, pair_01, etc.)
         
     Returns:
         True if successful, False otherwise
     """
     try:
         # Create pair-specific output directory
-        pair_dir = output_dir / f"pair_{img1_id:03d}_{img2_id:03d}"
+        if pair_index is not None:
+            pair_dir = output_dir / f"pair_{pair_index:02d}"
+        else:
+            pair_dir = output_dir / f"pair_{img1_id:03d}_{img2_id:03d}"
         pair_dir.mkdir(exist_ok=True)
         
         print(f"Processing pair: {img1_id} - {img2_id}")
@@ -974,9 +978,15 @@ def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2
         print("  Rectifying images...")
         rect1_img, rect2_img = rectify_images(rect_info)
         
-        # Save rectified images
-        cv2.imwrite(rect_info['rect1_path'], rect1_img)
-        cv2.imwrite(rect_info['rect2_path'], rect2_img)
+        # Save rectified images as left.jpg and right.jpg
+        left_img_path = pair_dir / 'left.jpg'
+        right_img_path = pair_dir / 'right.jpg'
+        cv2.imwrite(str(left_img_path), rect1_img)
+        cv2.imwrite(str(right_img_path), rect2_img)
+        
+        # Update rectification info with new image paths
+        rect_info['rect1_path'] = str(left_img_path)
+        rect_info['rect2_path'] = str(right_img_path)
         
         # Save rectification info
         rect_info_path = pair_dir / 'rectification.json'
@@ -1054,14 +1064,16 @@ def process_all_pairs(reconstruction: ColmapReconstruction, images_path: Path, o
     # Process each pair
     successful_pairs = 0
     failed_pairs = 0
+    pair_index = 0
     
     for img_id, partner_ids in pairs.items():
         for partner_id in partner_ids:
-            success = process_single_pair(reconstruction, img_id, partner_id, images_path, output_dir)
+            success = process_single_pair(reconstruction, img_id, partner_id, images_path, output_dir, pair_index)
             if success:
                 successful_pairs += 1
             else:
                 failed_pairs += 1
+            pair_index += 1
     
     print(f"\nProcessing complete!")
     print(f"Successful pairs: {successful_pairs}")
