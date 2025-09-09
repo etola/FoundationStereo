@@ -157,8 +157,9 @@ def test_coordinate_transformations(rect_params: Dict[str, Any],
     
     print("Coordinate transformation test:")
     print(f"  Original coords: {coords_img1}, {coords_img2}")
-    if rect_params.get('is_vertical', False):
-        print("  Note: Testing with vertical alignment (rotation applied)")
+    rotation_angle = rect_params.get('rotation_angle', 0)
+    if rotation_angle != 0:
+        print(f"  Note: Testing with {rotation_angle}° rotation applied")
     
     # Forward transformation
     coords_rect1, coords_rect2 = transform_coordinates_to_rectified(rect_params, coords_img1, coords_img2)
@@ -207,8 +208,9 @@ def test_single_image_coordinate_transformations(rect_params: Dict[str, Any],
     
     print("\nTesting single image coordinate transformations:")
     print(f"  Test coordinates: {coords_img1}, {coords_img2}")
-    if rect_params.get('is_vertical', False):
-        print("  Note: Testing with vertical alignment (rotation applied)")
+    rotation_angle = rect_params.get('rotation_angle', 0)
+    if rotation_angle != 0:
+        print(f"  Note: Testing with {rotation_angle}° rotation applied")
     
     # Test forward transformation comparison
     print(f"  Forward transformation comparison:")
@@ -297,8 +299,9 @@ def test_vectorized_coordinate_transformations(rect_params: Dict[str, Any],
     )
     
     print(f"\nTesting vectorized coordinate transformations with {num_test_points} random points:")
-    if rect_params.get('is_vertical', False):
-        print("  Note: Testing with vertical alignment (rotation applied)")
+    rotation_angle = rect_params.get('rotation_angle', 0)
+    if rotation_angle != 0:
+        print(f"  Note: Testing with {rotation_angle}° rotation applied")
     
     # Generate random test coordinates within reasonable image bounds
     np.random.seed(42)  # For reproducible results
@@ -476,19 +479,205 @@ def run_all_tests(rect_params: Dict[str, Any],
     return all_success
 
 
+def test_rotation_scenarios() -> bool:
+    """
+    Test coordinate transformations for different rotation scenarios (0°, 90°, 180°, 270°).
+    
+    Returns:
+        True if all rotation tests pass, False otherwise
+    """
+    print("\n" + "="*60)
+    print("TESTING DIFFERENT ROTATION SCENARIOS")
+    print("="*60)
+    
+    # Create synthetic rectification parameters for testing
+    image_size = (6000, 4000)  # width x height
+    
+    # Synthetic camera parameters
+    K = np.array([
+        [4000.0, 0, 3000.0],
+        [0, 4000.0, 2000.0],
+        [0, 0, 1]
+    ])
+    
+    # Synthetic rectification matrices (identity for simplicity)
+    R_rect = np.eye(3)
+    P = np.array([
+        [4000.0, 0, 3000.0, 0],
+        [0, 4000.0, 2000.0, 0],
+        [0, 0, 1, 0]
+    ])
+    
+    # Test coordinates
+    test_coords = [(1500.0, 1000.0), (4500.0, 3000.0)]
+    tolerance = 2.0  # Allow 2 pixel tolerance for synthetic tests
+    
+    all_tests_passed = True
+    
+    for rotation_angle in [0, 90, 180, 270]:
+        print(f"\nTesting {rotation_angle}° rotation:")
+        
+        # Create rotated parameters
+        if rotation_angle == 0:
+            K_rotated = K.copy()
+            image_size_rotated = image_size
+        elif rotation_angle == 90:
+            # 90-degree rotation: swap fx↔fy, cx↔cy, adjust for new dimensions
+            K_rotated = np.array([
+                [K[1,1], 0, K[1,2]],  # fy, 0, cy
+                [0, K[0,0], image_size[1] - K[0,2]],  # 0, fx, height-cx
+                [0, 0, 1]
+            ])
+            image_size_rotated = (image_size[1], image_size[0])  # Swap width and height
+        elif rotation_angle == 180:
+            # 180-degree rotation: keep fx, fy, adjust cx, cy
+            K_rotated = np.array([
+                [K[0,0], 0, image_size[0] - K[0,2]],  # fx, 0, width-cx
+                [0, K[1,1], image_size[1] - K[1,2]],  # 0, fy, height-cy
+                [0, 0, 1]
+            ])
+            image_size_rotated = image_size  # Keep same dimensions
+        elif rotation_angle == 270:
+            # 270-degree rotation: swap fx↔fy, adjust for new dimensions
+            K_rotated = np.array([
+                [K[1,1], 0, image_size[0] - K[1,2]],  # fy, 0, width-cy
+                [0, K[0,0], K[0,2]],  # 0, fx, cx
+                [0, 0, 1]
+            ])
+            image_size_rotated = (image_size[1], image_size[0])  # Swap width and height
+        
+        # Create synthetic rectification parameters
+        rect_params = {
+            'K1': K.tolist(),
+            'K2': K.tolist(),
+            'K1_rotated': K_rotated.tolist(),
+            'K2_rotated': K_rotated.tolist(),
+            'dist1': [0, 0, 0, 0, 0],  # No distortion
+            'dist2': [0, 0, 0, 0, 0],  # No distortion
+            'R1_rect': R_rect.tolist(),
+            'R2_rect': R_rect.tolist(),
+            'P1': P.tolist(),
+            'P2': P.tolist(),
+            'image_size': image_size,
+            'image_size_rotated': image_size_rotated,
+            'rotation_angle': rotation_angle,
+            'is_vertical': rotation_angle != 0,  # For backward compatibility
+            'roi1': (0, 0, 0, 0),
+            'roi2': (0, 0, 0, 0)
+        }
+        
+        # Test coordinate transformations for this rotation
+        success = test_coordinate_transformations(rect_params, test_coords, tolerance)
+        
+        print(f"  {rotation_angle}° rotation test: {'PASSED' if success else 'FAILED'}")
+        
+        if not success:
+            all_tests_passed = False
+    
+    print(f"\n{'='*60}")
+    print(f"ROTATION SCENARIO TESTS: {'ALL PASSED' if all_tests_passed else 'SOME FAILED'}")
+    print(f"{'='*60}")
+    
+    return all_tests_passed
+
+
+def test_coordinate_rotation_functions() -> bool:
+    """
+    Test the coordinate rotation helper functions directly.
+    
+    Returns:
+        True if all tests pass, False otherwise
+    """
+    print("\n" + "="*60)
+    print("TESTING COORDINATE ROTATION HELPER FUNCTIONS")
+    print("="*60)
+    
+    from rectify_stereo import _apply_rotation_to_coordinates, _apply_inverse_rotation_to_coordinates
+    
+    # Test parameters
+    image_size = (6000, 4000)  # width x height
+    test_coords = [(1500.0, 1000.0), (4500.0, 3000.0), (3000.0, 2000.0)]
+    tolerance = 1e-10  # Very strict tolerance for exact coordinate transformations
+    
+    all_tests_passed = True
+    
+    for rotation_angle in [0, 90, 180, 270]:
+        print(f"\nTesting {rotation_angle}° coordinate rotation:")
+        
+        for i, (x, y) in enumerate(test_coords):
+            # Apply rotation
+            x_rot, y_rot = _apply_rotation_to_coordinates((x, y), rotation_angle, image_size)
+            
+            # Apply inverse rotation
+            x_back, y_back = _apply_inverse_rotation_to_coordinates((x_rot, y_rot), rotation_angle, image_size)
+            
+            # Check if we get back the original coordinates
+            error = np.sqrt((x - x_back)**2 + (y - y_back)**2)
+            
+            print(f"  Coord {i+1}: ({x}, {y}) -> ({x_rot:.1f}, {y_rot:.1f}) -> ({x_back:.1f}, {y_back:.1f}), Error: {error:.2e}")
+            
+            if error > tolerance:
+                print(f"    ERROR: Round-trip error {error:.2e} exceeds tolerance {tolerance}")
+                all_tests_passed = False
+    
+    print(f"\n{'='*60}")
+    print(f"COORDINATE ROTATION TESTS: {'ALL PASSED' if all_tests_passed else 'SOME FAILED'}")
+    print(f"{'='*60}")
+    
+    return all_tests_passed
+
+
 def main():
     """Main function for running tests on COLMAP reconstructions."""
     parser = argparse.ArgumentParser(description='Test stereo rectification coordinate transformations')
-    parser.add_argument('-s', '--scene_folder', required=True, 
+    parser.add_argument('-s', '--scene_folder', required=False, 
                        help='Path to scene folder containing sparse/ and images/')
-    parser.add_argument('-o', '--out_folder', required=True,
+    parser.add_argument('-o', '--out_folder', required=False,
                        help='Output folder name (will be created under scene_folder)')
     parser.add_argument('--debug', nargs=4, type=float, metavar=('X0', 'Y0', 'X1', 'Y1'),
                        help='Debug mode: mark coordinates (x0,y0) in first image and (x1,y1) in second image')
-    parser.add_argument('img_id1', type=int, help='First image ID')
-    parser.add_argument('img_id2', type=int, help='Second image ID')
+    parser.add_argument('--test-rotations', action='store_true',
+                       help='Run unit tests for rotation scenarios only (no COLMAP data needed)')
+    parser.add_argument('img_id1', type=int, nargs='?', help='First image ID')
+    parser.add_argument('img_id2', type=int, nargs='?', help='Second image ID')
     
     args = parser.parse_args()
+    
+    # Handle rotation-only tests
+    if args.test_rotations:
+        print("Running rotation scenario tests...")
+        
+        # Test coordinate rotation functions
+        rotation_func_success = test_coordinate_rotation_functions()
+        
+        # Test rotation scenarios
+        rotation_scenario_success = test_rotation_scenarios()
+        
+        # Summary
+        print("\n" + "="*60)
+        print("ROTATION TEST SUMMARY")
+        print("="*60)
+        print(f"Coordinate rotation functions: {'PASS' if rotation_func_success else 'FAIL'}")
+        print(f"Rotation scenarios: {'PASS' if rotation_scenario_success else 'FAIL'}")
+        
+        overall_success = rotation_func_success and rotation_scenario_success
+        print(f"\nOverall result: {'ALL ROTATION TESTS PASSED' if overall_success else 'SOME ROTATION TESTS FAILED'}")
+        print("="*60)
+        
+        if overall_success:
+            print("\n🎉 All rotation tests passed! The new rotation logic is working correctly.")
+        else:
+            print("\n❌ Some rotation tests failed. Please check the output above for details.")
+            sys.exit(1)
+        
+        return
+    
+    # Validate arguments for COLMAP tests
+    if not args.scene_folder or not args.out_folder:
+        parser.error("--scene_folder and --out_folder are required when not using --test-rotations")
+    
+    if args.img_id1 is None or args.img_id2 is None:
+        parser.error("img_id1 and img_id2 are required when not using --test-rotations")
     
     # Validate paths
     scene_folder = Path(args.scene_folder)
@@ -535,7 +724,7 @@ def main():
     print("Computing stereo rectification parameters...")
     try:
         from rectify_stereo import initalize_rectification, rectify_images
-        rect_params = initalize_rectification(reconstruction, args.img_id1, args.img_id2, images_path, output_dir)
+        rect_params = initalize_rectification(reconstruction, args.img_id1, args.img_id2, images_path, output_dir, alpha=0.0)
         
         # Print information about the rectification
         print(f"Rectification type: {rect_params['type']}")
@@ -550,7 +739,8 @@ def main():
     # Rectify images
     print("Rectifying images...")
     try:
-        rect1_img, rect2_img = rectify_images(rect_params)
+        debug_dir = output_dir / 'debug_stages'
+        rect1_img, rect2_img = rectify_images(rect_params, debug_dir)
         cv2.imwrite(rect_params['rect1_path'], rect1_img)
         cv2.imwrite(rect_params['rect2_path'], rect2_img)
     except Exception as e:
