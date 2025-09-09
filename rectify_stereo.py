@@ -271,29 +271,94 @@ def _apply_inverse_rotation_to_coordinates(coords: Tuple[float, float],
         raise ValueError(f"Unsupported rotation angle: {rotation_angle}")
 
 
-def _determine_left_right_cameras(rect_params: Dict[str, Any]) -> None:
+def _compute_global_y_direction(reconstruction: ColmapReconstruction) -> np.ndarray:
+    """
+    Compute the global Y direction from all cameras in the reconstruction.
+    
+    Args:
+        reconstruction: COLMAP reconstruction object
+        
+    Returns:
+        Global Y direction as a unit vector
+    """
+    y_vectors = []
+    
+    # Collect Y-axis directions from all cameras
+    all_image_ids = reconstruction.get_all_image_ids()
+    for image_id in all_image_ids:
+        R = reconstruction.get_image_cam_from_world(image_id).rotation.matrix()
+        # Y-axis in world coordinates (negative because camera Y points down)
+        y_world = -R[1, :]  
+        y_vectors.append(y_world)
+    
+    # Average all Y vectors and normalize
+    y_vectors = np.array(y_vectors)
+    global_y = np.mean(y_vectors, axis=0)
+    global_y = global_y / np.linalg.norm(global_y)
+    
+    print(f"  Debug: Global Y direction: [{global_y[0]:.3f}, {global_y[1]:.3f}, {global_y[2]:.3f}]")
+    return global_y
+
+
+def _determine_left_right_cameras(rect_params: Dict[str, Any], global_y: np.ndarray) -> None:
     """
     Determine which camera is left and which is right for horizontal rectification.
+    Uses the global Y direction to determine if assignment should be inverted.
     
     Args:
         rect_params: Rectification parameters dictionary (will be modified)
+        global_y: Global Y direction from the entire dataset
     """
     img1_id = rect_params['img1_id']
     img2_id = rect_params['img2_id']
     
-    # Use the rotated relative translation to determine left/right
-    t_rel_rotated = np.array(rect_params['t_rel_rotated'])
+    # Extract projection matrices
+    P1 = np.array(rect_params['P1'])
+    P2 = np.array(rect_params['P2'])
     
-    # If t_rel_rotated[0] > 0, camera 2 is to the right of camera 1
-    # If t_rel_rotated[0] < 0, camera 1 is to the right of camera 2
-    if t_rel_rotated[0] > 0:
-        # Camera 1 is left, camera 2 is right
-        rect_params['left'] = img1_id
-        rect_params['right'] = img2_id
+    # The baseline between rectified cameras is in the X direction
+    # P2[0,3] represents the X offset of camera 2 relative to camera 1
+    baseline_x = P2[0, 3]
+    
+    print(f"  Debug: Baseline X offset: {baseline_x:.6f}")
+    
+    # Get the rectified Y direction from the first camera's rotation matrix
+    # After rectification, the Y direction should be [0, 1, 0] in rectified coordinates
+    # But we need to check how this aligns with the global Y direction
+    R1_rect = np.array(rect_params['R1_rect'])  # Rectified rotation matrix for camera 1
+    rectified_y = R1_rect[1, :]  # Y-axis of rectified camera in world coordinates
+    
+    # Check if rectified Y aligns with global Y direction
+    y_alignment = np.dot(rectified_y, global_y)
+    print(f"  Debug: Rectified Y alignment with global Y: {y_alignment:.6f}")
+    
+    # If rectified Y points in opposite direction to global Y, invert assignment
+    invert_assignment = y_alignment < 0
+    
+    if invert_assignment:
+        print(f"  Debug: Rectified Y opposite to global Y, inverting left/right assignment")
+        if baseline_x > 0:
+            # Camera 2 is left, camera 1 is right (inverted)
+            rect_params['left'] = img2_id
+            rect_params['right'] = img1_id
+            print(f"  Debug: Camera {img2_id} (left) -> Camera {img1_id} (right)")
+        else:
+            # Camera 1 is left, camera 2 is right (inverted)
+            rect_params['left'] = img1_id
+            rect_params['right'] = img2_id
+            print(f"  Debug: Camera {img1_id} (left) -> Camera {img2_id} (right)")
     else:
-        # Camera 2 is left, camera 1 is right
-        rect_params['left'] = img2_id
-        rect_params['right'] = img1_id
+        print(f"  Debug: Rectified Y aligns with global Y, standard left/right assignment")
+        if baseline_x > 0:
+            # Camera 1 is left, camera 2 is right
+            rect_params['left'] = img1_id
+            rect_params['right'] = img2_id
+            print(f"  Debug: Camera {img1_id} (left) -> Camera {img2_id} (right)")
+        else:
+            # Camera 2 is left, camera 1 is right
+            rect_params['left'] = img2_id
+            rect_params['right'] = img1_id
+            print(f"  Debug: Camera {img2_id} (left) -> Camera {img1_id} (right)")
 
 
 def compute_stereo_rectification(reconstruction: ColmapReconstruction, 
@@ -431,7 +496,10 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     
     # Since we always do horizontal rectification now, set the type accordingly
     rect_info['type'] = 'horizontal'
-    _determine_left_right_cameras(rect_info)
+    
+    # Compute global Y direction for the dataset
+    global_y = _compute_global_y_direction(reconstruction)
+    _determine_left_right_cameras(rect_info, global_y)
     
     return rect_info
 
