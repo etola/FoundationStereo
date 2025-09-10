@@ -462,6 +462,140 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
 
 
 
+def apply_custom_roi_cropping_with_alignment(img1_rect: np.ndarray, img2_rect: np.ndarray, 
+                                           rect_params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    """
+    Apply custom ROI cropping with alignment padding to maintain rectification property.
+    
+    Args:
+        img1_rect: First rectified image
+        img2_rect: Second rectified image
+        rect_params: Rectification parameters
+        
+    Returns:
+        Tuple of (img1_cropped, img2_cropped, mask1, mask2, updated_rect_params)
+    """
+    # Get original ROI values
+    roi1 = rect_params.get('roi1', (0, 0, img1_rect.shape[1], img1_rect.shape[0]))
+    roi2 = rect_params.get('roi2', (0, 0, img2_rect.shape[1], img2_rect.shape[0]))
+    
+    # Extract ROI values (x, y, width, height)
+    x1, y1, w1, h1 = roi1
+    x2, y2, w2, h2 = roi2
+    
+    # Crop each image to its valid ROI region only
+    img1_valid = img1_rect[y1:y1+h1, x1:x1+w1]
+    img2_valid = img2_rect[y2:y2+h2, x2:x2+w2]
+    
+    # Create masks for valid regions (before padding)
+    mask1_valid = np.ones((h1, w1), dtype=np.uint8) * 255
+    mask2_valid = np.ones((h2, w2), dtype=np.uint8) * 255
+    
+    # Determine alignment padding needed
+    min_y_offset = min(y1, y2)
+    pad_top_1 = y1 - min_y_offset
+    pad_top_2 = y2 - min_y_offset
+    
+    # Apply top padding for vertical alignment
+    img1_cropped = img1_valid
+    img2_cropped = img2_valid
+    mask1 = mask1_valid
+    mask2 = mask2_valid
+    
+    if pad_top_1 > 0:
+        if len(img1_cropped.shape) == 3:  # Color image
+            top_padding = np.zeros((pad_top_1, img1_cropped.shape[1], img1_cropped.shape[2]), dtype=img1_cropped.dtype)
+        else:  # Grayscale image
+            top_padding = np.zeros((pad_top_1, img1_cropped.shape[1]), dtype=img1_cropped.dtype)
+        img1_cropped = np.vstack([top_padding, img1_cropped])
+        
+        # Add padding to mask (0 = invalid/padded region)
+        mask_padding = np.zeros((pad_top_1, mask1.shape[1]), dtype=np.uint8)
+        mask1 = np.vstack([mask_padding, mask1])
+    
+    if pad_top_2 > 0:
+        if len(img2_cropped.shape) == 3:  # Color image
+            top_padding = np.zeros((pad_top_2, img2_cropped.shape[1], img2_cropped.shape[2]), dtype=img2_cropped.dtype)
+        else:  # Grayscale image
+            top_padding = np.zeros((pad_top_2, img2_cropped.shape[1]), dtype=img2_cropped.dtype)
+        img2_cropped = np.vstack([top_padding, img2_cropped])
+        
+        # Add padding to mask
+        mask_padding = np.zeros((pad_top_2, mask2.shape[1]), dtype=np.uint8)
+        mask2 = np.vstack([mask_padding, mask2])
+    
+    # Make both images the same size by padding to maximum dimensions
+    max_width = max(img1_cropped.shape[1], img2_cropped.shape[1])
+    max_height = max(img1_cropped.shape[0], img2_cropped.shape[0])
+    
+    # Calculate padding needed for each image
+    pad_right_1 = max_width - img1_cropped.shape[1]
+    pad_bottom_1 = max_height - img1_cropped.shape[0]
+    pad_right_2 = max_width - img2_cropped.shape[1]
+    pad_bottom_2 = max_height - img2_cropped.shape[0]
+    
+    # Apply right and bottom padding to image 1
+    if pad_right_1 > 0 or pad_bottom_1 > 0:
+        if len(img1_cropped.shape) == 3:  # Color image
+            img1_cropped = np.pad(img1_cropped, 
+                                ((0, pad_bottom_1), (0, pad_right_1), (0, 0)), 
+                                mode='constant', constant_values=0)
+        else:  # Grayscale image
+            img1_cropped = np.pad(img1_cropped, 
+                                ((0, pad_bottom_1), (0, pad_right_1)), 
+                                mode='constant', constant_values=0)
+        
+        # Apply padding to mask
+        mask1 = np.pad(mask1, ((0, pad_bottom_1), (0, pad_right_1)), 
+                      mode='constant', constant_values=0)
+    
+    # Apply right and bottom padding to image 2
+    if pad_right_2 > 0 or pad_bottom_2 > 0:
+        if len(img2_cropped.shape) == 3:  # Color image
+            img2_cropped = np.pad(img2_cropped, 
+                                ((0, pad_bottom_2), (0, pad_right_2), (0, 0)), 
+                                mode='constant', constant_values=0)
+        else:  # Grayscale image
+            img2_cropped = np.pad(img2_cropped, 
+                                ((0, pad_bottom_2), (0, pad_right_2)), 
+                                mode='constant', constant_values=0)
+        
+        # Apply padding to mask
+        mask2 = np.pad(mask2, ((0, pad_bottom_2), (0, pad_right_2)), 
+                      mode='constant', constant_values=0)
+    
+    # Update rect_params with new cropping information for coordinate transforms
+    updated_rect_params = rect_params.copy()
+    
+    # The new effective ROI starts from min_y_offset and has the final dimensions
+    new_roi1 = (x1, min_y_offset, img1_cropped.shape[1], img1_cropped.shape[0])
+    new_roi2 = (x2, min_y_offset, img2_cropped.shape[1], img2_cropped.shape[0])
+    
+    # Store original ROIs and new custom ROIs
+    updated_rect_params['roi1_original'] = roi1
+    updated_rect_params['roi2_original'] = roi2
+    updated_rect_params['roi1_custom'] = new_roi1
+    updated_rect_params['roi2_custom'] = new_roi2
+    
+    # Store padding information for coordinate transformations
+    updated_rect_params['custom_padding'] = {
+        'pad_top_1': pad_top_1,
+        'pad_top_2': pad_top_2,
+        'pad_right_1': pad_right_1,
+        'pad_bottom_1': pad_bottom_1,
+        'pad_right_2': pad_right_2,
+        'pad_bottom_2': pad_bottom_2,
+        'min_y_offset': min_y_offset,
+        'final_size': (img1_cropped.shape[0], img1_cropped.shape[1])  # (height, width)
+    }
+    
+    # Update the roi1 and roi2 in rect_params to reflect custom cropping
+    updated_rect_params['roi1'] = new_roi1
+    updated_rect_params['roi2'] = new_roi2
+    
+    return img1_cropped, img2_cropped, mask1, mask2, updated_rect_params
+
+
 def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -> Tuple[np.ndarray, np.ndarray]:
     """
     Rectify two images using the computed rectification parameters.
@@ -534,11 +668,54 @@ def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -
     img1_rect = cv2.remap(img1, map1_x, map1_y, cv2.INTER_LINEAR)
     img2_rect = cv2.remap(img2, map2_x, map2_y, cv2.INTER_LINEAR)
     
+    # Apply custom cropping when alpha=1 to maintain rectification and identical sizes
+    alpha = rect_params.get('alpha', 0.0)
+    if alpha == 1.0:
+        img1_cropped, img2_cropped, mask1, mask2, updated_rect_params = apply_custom_roi_cropping_with_alignment(
+            img1_rect, img2_rect, rect_params
+        )
+        
+        # Update rect_params with new cropping information
+        rect_params.update(updated_rect_params)
+        
+        # Use the cropped images as the final output
+        img1_rect = img1_cropped
+        img2_rect = img2_cropped
+    
     # Save rectified images for debugging
     if debug_output_dir:
-        imageio.imwrite(str(debug_output_dir / 'img1_2_rectified.jpg'), img1_rect)
-        imageio.imwrite(str(debug_output_dir / 'img2_2_rectified.jpg'), img2_rect)
-        print(f"  Debug: Saved final rectified images to {debug_output_dir}")
+        if alpha == 1.0:
+            # Save original rectified images (before custom cropping)
+            img1_rect_full = cv2.remap(img1, map1_x, map1_y, cv2.INTER_LINEAR)
+            img2_rect_full = cv2.remap(img2, map2_x, map2_y, cv2.INTER_LINEAR)
+            imageio.imwrite(str(debug_output_dir / 'img1_2_rectified_full.jpg'), img1_rect_full)
+            imageio.imwrite(str(debug_output_dir / 'img2_2_rectified_full.jpg'), img2_rect_full)
+            
+            # Save custom cropped and aligned images
+            imageio.imwrite(str(debug_output_dir / 'img1_3_cropped.jpg'), img1_rect)
+            imageio.imwrite(str(debug_output_dir / 'img2_3_cropped.jpg'), img2_rect)
+            
+            # Save masks
+            imageio.imwrite(str(debug_output_dir / 'img1_4_mask.jpg'), mask1)
+            imageio.imwrite(str(debug_output_dir / 'img2_4_mask.jpg'), mask2)
+            
+            # Print debug information
+            padding_info = rect_params['custom_padding']
+            print(f"  Debug: Saved rectified images with custom cropping to {debug_output_dir}")
+            print(f"  Debug: Original ROI1: {rect_params['roi1_original']}")
+            print(f"  Debug: Original ROI2: {rect_params['roi2_original']}")
+            print(f"  Debug: Custom ROI1: {rect_params['roi1_custom']}")
+            print(f"  Debug: Custom ROI2: {rect_params['roi2_custom']}")
+            print(f"  Debug: Padding applied - top: ({padding_info['pad_top_1']}, {padding_info['pad_top_2']}), "
+                  f"right: ({padding_info['pad_right_1']}, {padding_info['pad_right_2']}), "
+                  f"bottom: ({padding_info['pad_bottom_1']}, {padding_info['pad_bottom_2']})")
+            print(f"  Debug: Final image sizes: {padding_info['final_size']} (both images now identical)")
+            print(f"  Debug: Rectification maintained - both images start from y={padding_info['min_y_offset']}")
+        else:
+            # Standard debugging for other alpha values
+            imageio.imwrite(str(debug_output_dir / 'img1_2_rectified.jpg'), img1_rect)
+            imageio.imwrite(str(debug_output_dir / 'img2_2_rectified.jpg'), img2_rect)
+            print(f"  Debug: Saved final rectified images to {debug_output_dir}")
         
         # Save rectification info as text for debugging
         debug_info_path = debug_output_dir / 'rectification_debug.txt'
@@ -628,8 +805,21 @@ def transform_coordinates_to_rectified(rect_params: Dict[str, Any],
     )[0, 0]
     
     # Step 3: Apply cropping (alpha=0 means cropping is already applied in P1, P2)
-    # The coordinates returned are already in the cropped rectified image space
+    # For custom padding (alpha=1), adjust coordinates to account for padding
+    if 'custom_padding' in rect_params:
+        padding_info = rect_params['custom_padding']
+        
+        # Adjust for custom cropping and padding
+        # First, convert to custom ROI coordinates
+        x1_custom = point1_rect[0] - rect_params['roi1_custom'][0]
+        y1_custom = point1_rect[1] - rect_params['roi1_custom'][1] + padding_info['pad_top_1']
+        
+        x2_custom = point2_rect[0] - rect_params['roi2_custom'][0]
+        y2_custom = point2_rect[1] - rect_params['roi2_custom'][1] + padding_info['pad_top_2']
+        
+        return (x1_custom, y1_custom), (x2_custom, y2_custom)
     
+    # The coordinates returned are already in the cropped rectified image space
     return (point1_rect[0], point1_rect[1]), (point2_rect[0], point2_rect[1])
 
 
@@ -669,12 +859,23 @@ def transform_coordinates_from_rectified(rect_params: Dict[str, Any],
     x2_rect, y2_rect = coords_rect2
     
     # Step 1: Convert cropped rectified coordinates to uncropped coordinates
-    # When alpha=0, OpenCV crops the rectified images using ROI
-    # ROI format is (x, y, width, height), so we add the offset
-    x1_uncropped = x1_rect + roi1[0]  # Add ROI x offset
-    y1_uncropped = y1_rect + roi1[1]  # Add ROI y offset
-    x2_uncropped = x2_rect + roi2[0]  # Add ROI x offset
-    y2_uncropped = y2_rect + roi2[1]  # Add ROI y offset
+    # Handle custom padding for alpha=1
+    if 'custom_padding' in rect_params:
+        padding_info = rect_params['custom_padding']
+        
+        # Convert from custom padded coordinates back to original rectified coordinates
+        x1_uncropped = x1_rect + rect_params['roi1_custom'][0]
+        y1_uncropped = y1_rect + rect_params['roi1_custom'][1] - padding_info['pad_top_1']
+        
+        x2_uncropped = x2_rect + rect_params['roi2_custom'][0]
+        y2_uncropped = y2_rect + rect_params['roi2_custom'][1] - padding_info['pad_top_2']
+    else:
+        # When alpha=0, OpenCV crops the rectified images using ROI
+        # ROI format is (x, y, width, height), so we add the offset
+        x1_uncropped = x1_rect + roi1[0]  # Add ROI x offset
+        y1_uncropped = y1_rect + roi1[1]  # Add ROI y offset
+        x2_uncropped = x2_rect + roi2[0]  # Add ROI x offset
+        y2_uncropped = y2_rect + roi2[1]  # Add ROI y offset
     
     # Step 2: Convert uncropped rectified coordinates to normalized coordinates
     # Extract the rectified camera matrix from P1 and P2
@@ -775,6 +976,23 @@ def transform_single_image_coordinates_to_rectified(rect_params: Dict[str, Any],
         K_use, None, R=R_rect, P=P
     )[0, 0]
     
+    # Step 3: Apply custom padding adjustments if available
+    if 'custom_padding' in rect_params:
+        padding_info = rect_params['custom_padding']
+        
+        if image_id == 1:
+            roi_custom = rect_params['roi1_custom']
+            pad_top = padding_info['pad_top_1']
+        else:
+            roi_custom = rect_params['roi2_custom']
+            pad_top = padding_info['pad_top_2']
+        
+        # Adjust for custom cropping and padding
+        x_custom = point_rect[0] - roi_custom[0]
+        y_custom = point_rect[1] - roi_custom[1] + pad_top
+        
+        return (x_custom, y_custom)
+    
     return (point_rect[0], point_rect[1])
 
 
@@ -815,8 +1033,23 @@ def transform_single_image_coordinates_from_rectified(rect_params: Dict[str, Any
     image_size = tuple(rect_params['image_size'])
     
     # Step 1: Convert cropped rectified coordinates to uncropped coordinates
-    x_uncropped = x_rect + roi[0]  # Add ROI x offset
-    y_uncropped = y_rect + roi[1]  # Add ROI y offset
+    # Handle custom padding for alpha=1
+    if 'custom_padding' in rect_params:
+        padding_info = rect_params['custom_padding']
+        
+        if image_id == 1:
+            roi_custom = rect_params['roi1_custom']
+            pad_top = padding_info['pad_top_1']
+        else:
+            roi_custom = rect_params['roi2_custom']
+            pad_top = padding_info['pad_top_2']
+        
+        # Convert from custom padded coordinates back to original rectified coordinates
+        x_uncropped = x_rect + roi_custom[0]
+        y_uncropped = y_rect + roi_custom[1] - pad_top
+    else:
+        x_uncropped = x_rect + roi[0]  # Add ROI x offset
+        y_uncropped = y_rect + roi[1]  # Add ROI y offset
     
     # Step 2: Convert uncropped rectified coordinates to normalized coordinates
     K_rect = P[:, :3]  # Intrinsic matrix for rectified camera
@@ -920,6 +1153,18 @@ def transform_coordinates_to_rectified_vectorized(rect_params: Dict[str, Any],
     coords_rect1 = points1_rect.reshape(-1, 2)
     coords_rect2 = points2_rect.reshape(-1, 2)
     
+    # Step 3: Apply custom padding adjustments if available
+    if 'custom_padding' in rect_params:
+        padding_info = rect_params['custom_padding']
+        
+        # Adjust for custom cropping and padding
+        # First, convert to custom ROI coordinates
+        coords_rect1[:, 0] -= rect_params['roi1_custom'][0]
+        coords_rect1[:, 1] = coords_rect1[:, 1] - rect_params['roi1_custom'][1] + padding_info['pad_top_1']
+        
+        coords_rect2[:, 0] -= rect_params['roi2_custom'][0]
+        coords_rect2[:, 1] = coords_rect2[:, 1] - rect_params['roi2_custom'][1] + padding_info['pad_top_2']
+    
     return coords_rect1, coords_rect2
 
 
@@ -958,8 +1203,22 @@ def transform_coordinates_from_rectified_vectorized(rect_params: Dict[str, Any],
     coords_rect2 = np.array(coords_rect2, dtype=np.float64)
     
     # Step 1: Convert cropped rectified coordinates to uncropped coordinates
-    coords_uncropped1 = coords_rect1 + np.array([roi1[0], roi1[1]])
-    coords_uncropped2 = coords_rect2 + np.array([roi2[0], roi2[1]])
+    # Handle custom padding for alpha=1
+    if 'custom_padding' in rect_params:
+        padding_info = rect_params['custom_padding']
+        
+        # Convert from custom padded coordinates back to original rectified coordinates
+        coords_uncropped1 = coords_rect1.copy()
+        coords_uncropped1[:, 0] += rect_params['roi1_custom'][0]
+        coords_uncropped1[:, 1] = coords_uncropped1[:, 1] + rect_params['roi1_custom'][1] - padding_info['pad_top_1']
+        
+        coords_uncropped2 = coords_rect2.copy()
+        coords_uncropped2[:, 0] += rect_params['roi2_custom'][0]
+        coords_uncropped2[:, 1] = coords_uncropped2[:, 1] + rect_params['roi2_custom'][1] - padding_info['pad_top_2']
+    else:
+        # Use original ROI handling for alpha=0
+        coords_uncropped1 = coords_rect1 + np.array([roi1[0], roi1[1]])
+        coords_uncropped2 = coords_rect2 + np.array([roi2[0], roi2[1]])
     
     # Step 2: Convert to homogeneous coordinates
     ones = np.ones((coords_uncropped1.shape[0], 1))
@@ -1084,6 +1343,21 @@ def transform_single_image_coordinates_to_rectified_vectorized(rect_params: Dict
     # Reshape back to (N, 2)
     coords_rect = points_rect.reshape(-1, 2)
     
+    # Step 3: Apply custom padding adjustments if available
+    if 'custom_padding' in rect_params:
+        padding_info = rect_params['custom_padding']
+        
+        if image_id == 1:
+            roi_custom = rect_params['roi1_custom']
+            pad_top = padding_info['pad_top_1']
+        else:  # image_id == 2
+            roi_custom = rect_params['roi2_custom']
+            pad_top = padding_info['pad_top_2']
+        
+        # Adjust for custom cropping and padding
+        coords_rect[:, 0] -= roi_custom[0]
+        coords_rect[:, 1] = coords_rect[:, 1] - roi_custom[1] + pad_top
+    
     return coords_rect
 
 
@@ -1125,7 +1399,24 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     image_size = tuple(rect_params['image_size'])
     
     # Step 1: Convert cropped rectified coordinates to uncropped coordinates
-    coords_uncropped = coords_rect + np.array([roi[0], roi[1]])
+    # Handle custom padding for alpha=1
+    if 'custom_padding' in rect_params:
+        padding_info = rect_params['custom_padding']
+        
+        if image_id == 1:
+            roi_custom = rect_params['roi1_custom']
+            pad_top = padding_info['pad_top_1']
+        else:  # image_id == 2
+            roi_custom = rect_params['roi2_custom']
+            pad_top = padding_info['pad_top_2']
+        
+        # Convert from custom padded coordinates back to original rectified coordinates
+        coords_uncropped = coords_rect.copy()
+        coords_uncropped[:, 0] += roi_custom[0]
+        coords_uncropped[:, 1] = coords_uncropped[:, 1] + roi_custom[1] - pad_top
+    else:
+        # Use original ROI handling for alpha=0
+        coords_uncropped = coords_rect + np.array([roi[0], roi[1]])
     
     # Step 2: Convert to homogeneous coordinates
     ones = np.ones((coords_uncropped.shape[0], 1))

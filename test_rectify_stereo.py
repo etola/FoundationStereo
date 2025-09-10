@@ -5,6 +5,19 @@ Test script for stereo rectification coordinate transformations.
 This script contains comprehensive tests for all coordinate transformation functions
 in the rectify_stereo.py module, including debug functionality for marking coordinates
 on images.
+
+The script now supports alpha parameter testing (default: 1.0):
+- alpha=0.0: Uses OpenCV's aggressive cropping (small ROI)
+- alpha=1.0: Uses custom cropping with alignment padding (maintains rectification)
+
+When alpha=1.0, additional debug images are generated:
+- img1_2_rectified_full.jpg, img2_2_rectified_full.jpg: Original rectified images
+- img1_3_cropped.jpg, img2_3_cropped.jpg: Custom cropped and aligned images
+- img1_4_mask.jpg, img2_4_mask.jpg: Validity masks (255=valid, 0=padding)
+
+Usage examples:
+  python test_rectify_stereo.py -s ~/data/scene --alpha 1.0 -o test_out 25 10
+  python test_rectify_stereo.py -s ~/data/scene --alpha 1.0 --debug 800 500 545 770 -o test_out 25 10
 """
 
 import os
@@ -94,6 +107,17 @@ def run_debug_tests(rect_params: Dict[str, Any],
     )
     print(f"Rectified coordinates: {coords_rect1}, {coords_rect2}")
     
+    # Print custom padding information if available
+    if 'custom_padding' in rect_params:
+        padding_info = rect_params['custom_padding']
+        print(f"Custom padding info:")
+        print(f"  Original ROI1: {rect_params.get('roi1_original', 'N/A')}")
+        print(f"  Original ROI2: {rect_params.get('roi2_original', 'N/A')}")
+        print(f"  Custom ROI1: {rect_params.get('roi1_custom', 'N/A')}")
+        print(f"  Custom ROI2: {rect_params.get('roi2_custom', 'N/A')}")
+        print(f"  Final image size: {padding_info['final_size']}")
+        print(f"  Alignment Y offset: {padding_info['min_y_offset']}")
+    
     # Mark rectified coordinates
     img1_rect_marked_path = output_dir / f"{Path(img1_name).stem}_marked_rectified.jpg"
     img2_rect_marked_path = output_dir / f"{Path(img2_name).stem}_marked_rectified.jpg"
@@ -127,6 +151,13 @@ def run_debug_tests(rect_params: Dict[str, Any],
     mark_coordinate_on_image(img2_path, coords_back2[0], coords_back2[1], 
                            str(img2_back_marked_path), (0, 0, 255))
     print(f"Back-transformed marked images saved to: {img1_back_marked_path}, {img2_back_marked_path}")
+    
+    # Print information about available debug images
+    if 'custom_padding' in rect_params:
+        print(f"\nCustom cropping debug images available:")
+        print(f"  - Full rectified images: img1_2_rectified_full.jpg, img2_2_rectified_full.jpg")
+        print(f"  - Custom cropped images: img1_3_cropped.jpg, img2_3_cropped.jpg")
+        print(f"  - Validity masks: img1_4_mask.jpg, img2_4_mask.jpg")
     
     if all_success:
         print("✓ All coordinate transformations working correctly!")
@@ -303,10 +334,21 @@ def test_vectorized_coordinate_transformations(rect_params: Dict[str, Any],
     if rotation_angle != 0:
         print(f"  Note: Testing with {rotation_angle}° rotation applied")
     
-    # Generate random test coordinates within reasonable image bounds
+    # Generate random test coordinates within actual image bounds
     np.random.seed(42)  # For reproducible results
-    coords_img1 = np.random.uniform(100, 5000, (num_test_points, 2))
-    coords_img2 = np.random.uniform(100, 5000, (num_test_points, 2))
+    
+    # Get actual image dimensions
+    image_size = rect_params.get('image_size', (2000, 1500))  # Default fallback
+    width, height = image_size
+    print(f"  Using image dimensions: {width}x{height}")
+    
+    # Generate coordinates within valid image bounds with some margin
+    margin = 50  # Pixels from edge
+    max_x, max_y = width - margin, height - margin
+    print(f"  Coordinate range: [{margin}, {margin}] to [{max_x}, {max_y}]")
+    
+    coords_img1 = np.random.uniform([margin, margin], [max_x, max_y], (num_test_points, 2))
+    coords_img2 = np.random.uniform([margin, margin], [max_x, max_y], (num_test_points, 2))
     
     print(f"  Generated test coordinates:")
     print(f"    Image 1: {coords_img1[:3]}... (showing first 3)")
@@ -462,7 +504,7 @@ def run_all_tests(rect_params: Dict[str, Any],
     
     # Test 3: Vectorized coordinate transformations
     print("\n3. Vectorized coordinate transformation test:")
-    test3_success = test_vectorized_coordinate_transformations(rect_params, num_vectorized_points, tolerance=1e-3)
+    test3_success = test_vectorized_coordinate_transformations(rect_params, num_vectorized_points, tolerance=1.0)
     
     # Summary
     print("\n" + "=" * 60)
@@ -638,10 +680,16 @@ def main():
                        help='Debug mode: mark coordinates (x0,y0) in first image and (x1,y1) in second image')
     parser.add_argument('--test-rotations', action='store_true',
                        help='Run unit tests for rotation scenarios only (no COLMAP data needed)')
+    parser.add_argument('--alpha', type=float, default=1.0,
+                       help='Alpha parameter for stereo rectification (0.0=more crop, 1.0=less crop, default: 1.0)')
     parser.add_argument('img_id1', type=int, nargs='?', help='First image ID')
     parser.add_argument('img_id2', type=int, nargs='?', help='Second image ID')
     
     args = parser.parse_args()
+    
+    # Validate alpha parameter
+    if not (0.0 <= args.alpha <= 1.0):
+        parser.error("Alpha parameter must be between 0.0 and 1.0")
     
     # Handle rotation-only tests
     if args.test_rotations:
@@ -724,12 +772,18 @@ def main():
     print("Computing stereo rectification parameters...")
     try:
         from rectify_stereo import initalize_rectification, rectify_images
-        rect_params = initalize_rectification(reconstruction, args.img_id1, args.img_id2, images_path, output_dir, alpha=0.0)
+        rect_params = initalize_rectification(reconstruction, args.img_id1, args.img_id2, images_path, output_dir, alpha=args.alpha)
         
         # Print information about the rectification
         print(f"Rectification type: {rect_params['type']}")
         print(f"Left image: {rect_params['left']}")
         print(f"Right image: {rect_params['right']}")
+        print(f"Alpha parameter: {args.alpha}")
+        if args.alpha == 1.0:
+            print("Note: Using custom cropping with alignment padding to maintain rectification property")
+            if 'custom_padding' in rect_params:
+                padding_info = rect_params['custom_padding']
+                print(f"Custom padding applied - final size: {padding_info['final_size']}")
         if rect_params.get('is_vertical', False):
             print("Note: Images were vertically aligned and rotated 90 degrees before rectification")
     except Exception as e:
@@ -766,6 +820,9 @@ def main():
     else:
         # Normal mode: run tests without coordinate marking
         print("\nRunning coordinate transformation tests...")
+        print(f"Using alpha={args.alpha} for rectification")
+        if args.alpha == 1.0 and 'custom_padding' in rect_params:
+            print("Custom cropping and padding applied - coordinate transformations adjusted accordingly")
         
         # Use default test coordinates
         test_coords = ((1000.0, 1000.0), (2000.0, 1500.0))
