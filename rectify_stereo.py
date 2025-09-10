@@ -271,94 +271,44 @@ def _apply_inverse_rotation_to_coordinates(coords: Tuple[float, float],
         raise ValueError(f"Unsupported rotation angle: {rotation_angle}")
 
 
-def _compute_global_y_direction(reconstruction: ColmapReconstruction) -> np.ndarray:
+def _determine_image_order_by_camera_centers(C1: np.ndarray, C2: np.ndarray, img1_id: int, img2_id: int) -> Tuple[int, int]:
     """
-    Compute the global Y direction from all cameras in the reconstruction.
+    Determine the order of images based on camera center positions.
     
     Args:
-        reconstruction: COLMAP reconstruction object
+        C1: Camera center of first image in world coordinates
+        C2: Camera center of second image in world coordinates  
+        img1_id: First image ID
+        img2_id: Second image ID
         
     Returns:
-        Global Y direction as a unit vector
+        Tuple of (first_image_id, second_image_id) in proper order
     """
-    y_vectors = []
+    # Calculate the vector between camera centers
+    center_diff = C2 - C1
     
-    # Collect Y-axis directions from all cameras
-    all_image_ids = reconstruction.get_all_image_ids()
-    for image_id in all_image_ids:
-        R = reconstruction.get_image_cam_from_world(image_id).rotation.matrix()
-        # Y-axis in world coordinates (negative because camera Y points down)
-        y_world = -R[1, :]  
-        y_vectors.append(y_world)
+    # Determine if alignment is mostly vertical or horizontal
+    abs_dx = abs(center_diff[0])  # Horizontal separation
+    abs_dy = abs(center_diff[1])  # Vertical separation
     
-    # Average all Y vectors and normalize
-    y_vectors = np.array(y_vectors)
-    global_y = np.mean(y_vectors, axis=0)
-    global_y = global_y / np.linalg.norm(global_y)
+    print(f"  Debug: Camera center difference: [{center_diff[0]:.6f}, {center_diff[1]:.6f}, {center_diff[2]:.6f}]")
+    print(f"  Debug: Horizontal separation: {abs_dx:.6f}, Vertical separation: {abs_dy:.6f}")
     
-    print(f"  Debug: Global Y direction: [{global_y[0]:.3f}, {global_y[1]:.3f}, {global_y[2]:.3f}]")
-    return global_y
-
-
-def _determine_left_right_cameras(rect_params: Dict[str, Any], global_y: np.ndarray) -> None:
-    """
-    Determine which camera is left and which is right for horizontal rectification.
-    Uses the global Y direction to determine if assignment should be inverted.
-    
-    Args:
-        rect_params: Rectification parameters dictionary (will be modified)
-        global_y: Global Y direction from the entire dataset
-    """
-    img1_id = rect_params['img1_id']
-    img2_id = rect_params['img2_id']
-    
-    # Extract projection matrices
-    P1 = np.array(rect_params['P1'])
-    P2 = np.array(rect_params['P2'])
-    
-    # The baseline between rectified cameras is in the X direction
-    # P2[0,3] represents the X offset of camera 2 relative to camera 1
-    baseline_x = P2[0, 3]
-    
-    print(f"  Debug: Baseline X offset: {baseline_x:.6f}")
-    
-    # Get the rectified Y direction from the first camera's rotation matrix
-    # After rectification, the Y direction should be [0, 1, 0] in rectified coordinates
-    # But we need to check how this aligns with the global Y direction
-    R1_rect = np.array(rect_params['R1_rect'])  # Rectified rotation matrix for camera 1
-    rectified_y = R1_rect[1, :]  # Y-axis of rectified camera in world coordinates
-    
-    # Check if rectified Y aligns with global Y direction
-    y_alignment = np.dot(rectified_y, global_y)
-    print(f"  Debug: Rectified Y alignment with global Y: {y_alignment:.6f}")
-    
-    # If rectified Y points in opposite direction to global Y, invert assignment
-    invert_assignment = y_alignment < 0
-    
-    if invert_assignment:
-        print(f"  Debug: Rectified Y opposite to global Y, inverting left/right assignment")
-        if baseline_x > 0:
-            # Camera 2 is left, camera 1 is right (inverted)
-            rect_params['left'] = img2_id
-            rect_params['right'] = img1_id
-            print(f"  Debug: Camera {img2_id} (left) -> Camera {img1_id} (right)")
+    if abs_dy > abs_dx:
+        # Mostly vertical alignment - order by Y coordinate (smaller Y first)
+        print(f"  Debug: Vertical alignment detected")
+        if C1[1] < C2[1]:
+            return img1_id, img2_id
         else:
-            # Camera 1 is left, camera 2 is right (inverted)
-            rect_params['left'] = img1_id
-            rect_params['right'] = img2_id
-            print(f"  Debug: Camera {img1_id} (left) -> Camera {img2_id} (right)")
+            return img2_id, img1_id
     else:
-        print(f"  Debug: Rectified Y aligns with global Y, standard left/right assignment")
-        if baseline_x > 0:
-            # Camera 1 is left, camera 2 is right
-            rect_params['left'] = img1_id
-            rect_params['right'] = img2_id
-            print(f"  Debug: Camera {img1_id} (left) -> Camera {img2_id} (right)")
+        # Mostly horizontal alignment - order by X coordinate (smaller X first)
+        print(f"  Debug: Horizontal alignment detected")
+        if C1[0] < C2[0]:
+            return img2_id, img1_id
         else:
-            # Camera 2 is left, camera 1 is right
-            rect_params['left'] = img2_id
-            rect_params['right'] = img1_id
-            print(f"  Debug: Camera {img2_id} (left) -> Camera {img1_id} (right)")
+            return img1_id, img2_id
+
 
 
 def compute_stereo_rectification(reconstruction: ColmapReconstruction, 
@@ -388,6 +338,11 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     R2 = reconstruction.get_image_cam_from_world(img2_id).rotation.matrix()
     t2 = reconstruction.get_image_cam_from_world(img2_id).translation
     
+    C1 = -R1.T @ t1
+    C2 = -R2.T @ t2
+    print(f"    C1: [{C1[0]:.6f}, {C1[1]:.6f}, {C1[2]:.6f}]")
+    print(f"    C2: [{C2[0]:.6f}, {C2[1]:.6f}, {C2[2]:.6f}]")
+
     # Get distortion parameters
     _, dist1 = reconstruction.get_camera_distortion_params(img1_id)
     _, dist2 = reconstruction.get_camera_distortion_params(img2_id)
@@ -436,9 +391,17 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     print(f"    K1_rotated fx: {K1_rotated[0,0]:.2f}, fy: {K1_rotated[1,1]:.2f}, cx: {K1_rotated[0,2]:.2f}, cy: {K1_rotated[1,2]:.2f}")
     print(f"    K2_rotated fx: {K2_rotated[0,0]:.2f}, fy: {K2_rotated[1,1]:.2f}, cx: {K2_rotated[0,2]:.2f}, cy: {K2_rotated[1,2]:.2f}")
     print(f"    R_rel_rotated determinant: {np.linalg.det(R_rel_rotated):.6f}")
+    print(f"    t_rel        : [{t_rel[0]:.6f}, {t_rel[1]:.6f}, {t_rel[2]:.6f}]")
     print(f"    t_rel_rotated: [{t_rel_rotated[0]:.6f}, {t_rel_rotated[1]:.6f}, {t_rel_rotated[2]:.6f}]")
     print(f"    t_rel_rotated norm: {np.linalg.norm(t_rel_rotated):.6f}")
     
+
+    y_world = -R_rel[1, :]
+    y_world_rotated = -R_rel_rotated[1, :]
+    print(f"    y_world        : [{y_world[0]:.6f}, {y_world[1]:.6f}, {y_world[2]:.6f}]")
+    print(f"    y_world_rotated: [{y_world_rotated[0]:.6f}, {y_world_rotated[1]:.6f}, {y_world_rotated[2]:.6f}]")
+
+
     # Stereo rectification using OpenCV functions (now always horizontal)
     R1_rect, R2_rect, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
         K1_rotated, dist1, K2_rotated, dist2, image_size_rotated, R_rel_rotated, t_rel_rotated,
@@ -496,124 +459,11 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     
     # Since we always do horizontal rectification now, set the type accordingly
     rect_info['type'] = 'horizontal'
-    
-    # Compute global Y direction for the dataset
-    global_y = _compute_global_y_direction(reconstruction)
-    _determine_left_right_cameras(rect_info, global_y)
+    rect_info['left'] = img1_id
+    rect_info['right'] = img2_id
     
     return rect_info
 
-def determine_rectification_type(rect_params: Dict[str, Any]) -> None:
-    """
-    Determine if rectification is horizontal or vertical and update rect_params with image IDs.
-    
-    Args:
-        rect_params: Rectification parameters dictionary (will be modified)
-        
-    Returns:
-        Rectification type: 'horizontal' or 'vertical'
-    """
-    # Extract rectified projection matrices
-    P1 = np.array(rect_params['P1'])
-    P2 = np.array(rect_params['P2'])
-    
-    # Compute fundamental matrix from rectified projection matrices
-    # F = [e2]_x * P2 * P1^+
-    # where P1^+ is the pseudo-inverse of P1 and e2 is the epipole in image 2
-    
-    # For rectified stereo, the fundamental matrix should be:
-    # F = [0, 0, 0; 0, 0, -1; 0, 1, 0] for horizontal rectification
-    # F = [0, 0, 1; 0, 0, 0; -1, 0, 0] for vertical rectification
-    
-    # Compute epipole in second image
-    # e2 = P2 * C1 where C1 is camera center of first camera
-    # For rectified cameras, C1 = [0, 0, 0, 1] in rectified coordinate system
-    C1_rect = np.array([0, 0, 0, 1])
-    e2 = P2 @ C1_rect
-    e2 = e2[:3] / e2[2] if e2[2] != 0 else e2[:3]
-    
-    # Create skew-symmetric matrix for epipole
-    e2_skew = np.array([
-        [0, -e2[2], e2[1]],
-        [e2[2], 0, -e2[0]],
-        [-e2[1], e2[0], 0]
-    ])
-    
-    # Compute fundamental matrix
-    P1_pinv = np.linalg.pinv(P1)
-    F = e2_skew @ P2 @ P1_pinv
-    
-    # Check the structure of the fundamental matrix
-    # For horizontal rectification: F[1,2] = -1, F[2,1] = 1, others ≈ 0
-    # For vertical rectification: F[0,2] = 1, F[2,0] = -1, others ≈ 0
-
-    rect_params['left'] = None
-    rect_params['right'] = None
-    rect_params['top'] = None
-    rect_params['bottom'] = None
-
-    img1_id = rect_params['img1_id']
-    img2_id = rect_params['img2_id']
-
-    # Check horizontal rectification
-    if abs(F[1, 2] + 1) < 0.1 and abs(F[2, 1] - 1) < 0.1:
-        # For horizontal rectification, determine which camera is left/right
-        # Compare the x-coordinate of camera centers in world coordinates
-        t_rel = np.array(rect_params['t_rel'])
-        
-        # If t_rel[0] > 0, camera 2 is to the right of camera 1
-        # If t_rel[0] < 0, camera 1 is to the right of camera 2
-        if t_rel[0] > 0:
-            # Camera 1 is left, camera 2 is right
-            rect_params['left'] = img1_id
-            rect_params['right'] = img2_id
-        else:
-            # Camera 2 is left, camera 1 is right
-            rect_params['left'] = img2_id
-            rect_params['right'] = img1_id
-        rect_params['type'] = 'horizontal'
-    # Check vertical rectification  
-    elif abs(F[0, 2] - 1) < 0.1 and abs(F[2, 0] + 1) < 0.1:
-        # For vertical rectification, determine which camera is higher
-        # Compare the y-coordinate of camera centers in world coordinates
-        t_rel = np.array(rect_params['t_rel'])
-        
-        # If t_rel[1] > 0, camera 2 is higher than camera 1
-        # If t_rel[1] < 0, camera 1 is higher than camera 2
-        if t_rel[1] > 0:
-            # Camera 2 is higher (top), camera 1 is lower (bottom)
-            rect_params['top'] = img2_id
-            rect_params['bottom'] = img1_id
-        else:
-            # Camera 1 is higher (top), camera 2 is lower (bottom)
-            rect_params['top'] = img1_id
-            rect_params['bottom'] = img2_id
-        rect_params['type'] = 'vertical'
-    else:
-        # Fallback: check which direction has the largest off-diagonal elements
-        horizontal_strength = abs(F[1, 2]) + abs(F[2, 1])
-        vertical_strength = abs(F[0, 2]) + abs(F[2, 0])
-        
-        if horizontal_strength > vertical_strength:
-            # Horizontal fallback
-            t_rel = np.array(rect_params['t_rel'])
-            if t_rel[0] > 0:
-                rect_params['left'] = img1_id
-                rect_params['right'] = img2_id
-            else:
-                rect_params['left'] = img2_id
-                rect_params['right'] = img1_id
-            rect_params['type'] = 'horizontal'
-        else:
-            # For vertical fallback, use the same logic
-            t_rel = np.array(rect_params['t_rel'])
-            if t_rel[1] > 0:
-                rect_params['top'] = img2_id
-                rect_params['bottom'] = img1_id
-            else:
-                rect_params['top'] = img1_id
-                rect_params['bottom'] = img2_id
-            rect_params['type'] = 'vertical'
 
 
 def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -> Tuple[np.ndarray, np.ndarray]:
@@ -746,27 +596,28 @@ def transform_coordinates_to_rectified(rect_params: Dict[str, Any],
     R2_rect = np.array(rect_params['R2_rect'])
     P1 = np.array(rect_params['P1'])
     P2 = np.array(rect_params['P2'])
-    rotation_angle = rect_params.get('rotation_angle', 0)
+    rotation_angle1 = rect_params.get('rotation_angle1', 0)
+    rotation_angle2 = rect_params.get('rotation_angle2', 0)
     image_size = tuple(rect_params['image_size'])
     
     x1, y1 = coords_img1
     x2, y2 = coords_img2
     
-    # Step 1: Apply rotation if needed
-    rotation_angle = rect_params.get('rotation_angle', 0)
-    
-    if rotation_angle != 0:
-        # Apply rotation to coordinates
-        x1_rot, y1_rot = _apply_rotation_to_coordinates((x1, y1), rotation_angle, image_size)
-        x2_rot, y2_rot = _apply_rotation_to_coordinates((x2, y2), rotation_angle, image_size)
-        
-        # Use rotated intrinsic matrices
+    # Step 1: Apply individual rotations if needed
+    if rotation_angle1 != 0:
+        # Apply rotation to coordinates for image 1
+        x1_rot, y1_rot = _apply_rotation_to_coordinates((x1, y1), rotation_angle1, image_size)
         K1_use = K1_rotated
-        K2_use = K2_rotated
     else:
         x1_rot, y1_rot = x1, y1
-        x2_rot, y2_rot = x2, y2
         K1_use = K1
+    
+    if rotation_angle2 != 0:
+        # Apply rotation to coordinates for image 2
+        x2_rot, y2_rot = _apply_rotation_to_coordinates((x2, y2), rotation_angle2, image_size)
+        K2_use = K2_rotated
+    else:
+        x2_rot, y2_rot = x2, y2
         K2_use = K2
     
     # Step 2: Apply rectification using OpenCV's undistortPoints
@@ -814,7 +665,8 @@ def transform_coordinates_from_rectified(rect_params: Dict[str, Any],
     P2 = np.array(rect_params['P2'])
     roi1 = rect_params.get('roi1', (0, 0, 0, 0))
     roi2 = rect_params.get('roi2', (0, 0, 0, 0))
-    rotation_angle = rect_params.get('rotation_angle', 0)
+    rotation_angle1 = rect_params.get('rotation_angle1', 0)
+    rotation_angle2 = rect_params.get('rotation_angle2', 0)
     image_size = tuple(rect_params['image_size'])
     
     x1_rect, y1_rect = coords_rect1
@@ -841,13 +693,15 @@ def transform_coordinates_from_rectified(rect_params: Dict[str, Any],
     point1_original_normalized = R1_rect.T @ point1_rect_normalized
     point2_original_normalized = R2_rect.T @ point2_rect_normalized
     
-    # Step 4: Project back to rotated image coordinates
-    if rotation_angle != 0:
-        # Use rotated intrinsic matrices
+    # Step 4: Project back to rotated image coordinates using individual rotations
+    if rotation_angle1 != 0:
         K1_use = K1_rotated
-        K2_use = K2_rotated
     else:
         K1_use = K1
+    
+    if rotation_angle2 != 0:
+        K2_use = K2_rotated
+    else:
         K2_use = K2
     
     point1_rotated_homogeneous = K1_use @ point1_original_normalized
@@ -858,15 +712,17 @@ def transform_coordinates_from_rectified(rect_params: Dict[str, Any],
     x2_rotated = point2_rotated_homogeneous[0] / point2_rotated_homogeneous[2]
     y2_rotated = point2_rotated_homogeneous[1] / point2_rotated_homogeneous[2]
     
-    # Step 5: Apply inverse rotation if needed
-    rotation_angle = rect_params.get('rotation_angle', 0)
-    
-    if rotation_angle != 0:
-        # Apply inverse rotation to coordinates
-        x1_orig, y1_orig = _apply_inverse_rotation_to_coordinates((x1_rotated, y1_rotated), rotation_angle, image_size)
-        x2_orig, y2_orig = _apply_inverse_rotation_to_coordinates((x2_rotated, y2_rotated), rotation_angle, image_size)
+    # Step 5: Apply individual inverse rotations if needed
+    if rotation_angle1 != 0:
+        # Apply inverse rotation to coordinates for image 1
+        x1_orig, y1_orig = _apply_inverse_rotation_to_coordinates((x1_rotated, y1_rotated), rotation_angle1, image_size)
     else:
         x1_orig, y1_orig = x1_rotated, y1_rotated
+    
+    if rotation_angle2 != 0:
+        # Apply inverse rotation to coordinates for image 2
+        x2_orig, y2_orig = _apply_inverse_rotation_to_coordinates((x2_rotated, y2_rotated), rotation_angle2, image_size)
+    else:
         x2_orig, y2_orig = x2_rotated, y2_rotated
     
     return (x1_orig, y1_orig), (x2_orig, y2_orig)
@@ -894,22 +750,21 @@ def transform_single_image_coordinates_to_rectified(rect_params: Dict[str, Any],
         dist = np.array(rect_params['dist1'])
         R_rect = np.array(rect_params['R1_rect'])
         P = np.array(rect_params['P1'])
+        rotation_angle = rect_params.get('rotation_angle1', 0)
     elif image_id == 2:
         K = np.array(rect_params['K2'])
         K_rotated = np.array(rect_params['K2_rotated'])
         dist = np.array(rect_params['dist2'])
         R_rect = np.array(rect_params['R2_rect'])
         P = np.array(rect_params['P2'])
+        rotation_angle = rect_params.get('rotation_angle2', 0)
     else:
         raise ValueError(f"Invalid image_id: {image_id}. Must be 1 or 2.")
     
     x, y = coords
-    rotation_angle = rect_params.get('rotation_angle', 0)
     image_size = tuple(rect_params['image_size'])
     
     # Step 1: Apply rotation if needed
-    rotation_angle = rect_params.get('rotation_angle', 0)
-    
     if rotation_angle != 0:
         # Apply rotation to coordinates
         x_rot, y_rot = _apply_rotation_to_coordinates((x, y), rotation_angle, image_size)
@@ -949,17 +804,18 @@ def transform_single_image_coordinates_from_rectified(rect_params: Dict[str, Any
         R_rect = np.array(rect_params['R1_rect'])
         P = np.array(rect_params['P1'])
         roi = rect_params.get('roi1', (0, 0, 0, 0))
+        rotation_angle = rect_params.get('rotation_angle1', 0)
     elif image_id == 2:
         K = np.array(rect_params['K2'])
         K_rotated = np.array(rect_params['K2_rotated'])
         R_rect = np.array(rect_params['R2_rect'])
         P = np.array(rect_params['P2'])
         roi = rect_params.get('roi2', (0, 0, 0, 0))
+        rotation_angle = rect_params.get('rotation_angle2', 0)
     else:
         raise ValueError(f"Invalid image_id: {image_id}. Must be 1 or 2.")
     
     x_rect, y_rect = coords_rect
-    rotation_angle = rect_params.get('rotation_angle', 0)
     image_size = tuple(rect_params['image_size'])
     
     # Step 1: Convert cropped rectified coordinates to uncropped coordinates
@@ -984,8 +840,6 @@ def transform_single_image_coordinates_from_rectified(rect_params: Dict[str, Any
     y_rotated = point_rotated_homogeneous[1] / point_rotated_homogeneous[2]
     
     # Step 5: Apply inverse rotation if needed
-    rotation_angle = rect_params.get('rotation_angle', 0)
-    
     if rotation_angle != 0:
         # Apply inverse rotation to coordinates
         x_orig, y_orig = _apply_inverse_rotation_to_coordinates((x_rotated, y_rotated), rotation_angle, image_size)
@@ -1021,36 +875,41 @@ def transform_coordinates_to_rectified_vectorized(rect_params: Dict[str, Any],
     R2_rect = np.array(rect_params['R2_rect'])
     P1 = np.array(rect_params['P1'])
     P2 = np.array(rect_params['P2'])
-    rotation_angle = rect_params.get('rotation_angle', 0)
+    rotation_angle1 = rect_params.get('rotation_angle1', 0)
+    rotation_angle2 = rect_params.get('rotation_angle2', 0)
     image_size = tuple(rect_params['image_size'])
     
     # Ensure inputs are numpy arrays
     coords_img1 = np.array(coords_img1, dtype=np.float32)
     coords_img2 = np.array(coords_img2, dtype=np.float32)
     
-    # Step 1: Apply rotation if needed
-    rotation_angle = rect_params.get('rotation_angle', 0)
+    # Step 1: Apply individual rotations if needed
+    w, h = image_size
     
-    if rotation_angle != 0:
-        # Apply rotation to coordinates vectorized
-        w, h = image_size
-        if rotation_angle == 90:
+    # Handle image 1 rotation
+    if rotation_angle1 != 0:
+        if rotation_angle1 == 90:
             coords_img1_rot = np.column_stack([h - coords_img1[:, 1], coords_img1[:, 0]])
-            coords_img2_rot = np.column_stack([h - coords_img2[:, 1], coords_img2[:, 0]])
-        elif rotation_angle == 180:
+        elif rotation_angle1 == 180:
             coords_img1_rot = np.column_stack([w - coords_img1[:, 0], h - coords_img1[:, 1]])
-            coords_img2_rot = np.column_stack([w - coords_img2[:, 0], h - coords_img2[:, 1]])
-        elif rotation_angle == 270:
+        elif rotation_angle1 == 270:
             coords_img1_rot = np.column_stack([coords_img1[:, 1], w - coords_img1[:, 0]])
-            coords_img2_rot = np.column_stack([coords_img2[:, 1], w - coords_img2[:, 0]])
-        
-        # Use rotated intrinsic matrices
         K1_use = K1_rotated
-        K2_use = K2_rotated
     else:
         coords_img1_rot = coords_img1
-        coords_img2_rot = coords_img2
         K1_use = K1
+        
+    # Handle image 2 rotation
+    if rotation_angle2 != 0:
+        if rotation_angle2 == 90:
+            coords_img2_rot = np.column_stack([h - coords_img2[:, 1], coords_img2[:, 0]])
+        elif rotation_angle2 == 180:
+            coords_img2_rot = np.column_stack([w - coords_img2[:, 0], h - coords_img2[:, 1]])
+        elif rotation_angle2 == 270:
+            coords_img2_rot = np.column_stack([coords_img2[:, 1], w - coords_img2[:, 0]])
+        K2_use = K2_rotated
+    else:
+        coords_img2_rot = coords_img2
         K2_use = K2
     
     # Reshape to (N, 1, 2) for OpenCV
@@ -1094,7 +953,8 @@ def transform_coordinates_from_rectified_vectorized(rect_params: Dict[str, Any],
     P2 = np.array(rect_params['P2'])
     roi1 = rect_params.get('roi1', (0, 0, 0, 0))
     roi2 = rect_params.get('roi2', (0, 0, 0, 0))
-    rotation_angle = rect_params.get('rotation_angle', 0)
+    rotation_angle1 = rect_params.get('rotation_angle1', 0)
+    rotation_angle2 = rect_params.get('rotation_angle2', 0)
     image_size = tuple(rect_params['image_size'])
     
     # Ensure inputs are numpy arrays
@@ -1120,12 +980,15 @@ def transform_coordinates_from_rectified_vectorized(rect_params: Dict[str, Any],
     coords_orig_norm1 = (R1_rect.T @ coords_norm1.T).T
     coords_orig_norm2 = (R2_rect.T @ coords_norm2.T).T
     
-    # Step 5: Project back to rotated image coordinates
-    if rotation_angle != 0:
+    # Step 5: Project back to rotated image coordinates using individual rotations
+    if rotation_angle1 != 0:
         K1_use = K1_rotated
-        K2_use = K2_rotated
     else:
         K1_use = K1
+        
+    if rotation_angle2 != 0:
+        K2_use = K2_rotated
+    else:
         K2_use = K2
     
     coords_rotated_hom1 = (K1_use @ coords_orig_norm1.T).T
@@ -1135,23 +998,29 @@ def transform_coordinates_from_rectified_vectorized(rect_params: Dict[str, Any],
     coords_rotated1 = coords_rotated_hom1[:, :2] / coords_rotated_hom1[:, 2:3]
     coords_rotated2 = coords_rotated_hom2[:, :2] / coords_rotated_hom2[:, 2:3]
     
-    # Step 6: Apply inverse rotation if needed
-    rotation_angle = rect_params.get('rotation_angle', 0)
+    # Step 6: Apply individual inverse rotations if needed
+    w, h = image_size
     
-    if rotation_angle != 0:
-        # Apply inverse rotation to coordinates vectorized
-        w, h = image_size
-        if rotation_angle == 90:
+    # Handle image 1 inverse rotation
+    if rotation_angle1 != 0:
+        if rotation_angle1 == 90:
             coords_orig1 = np.column_stack([coords_rotated1[:, 1], h - coords_rotated1[:, 0]])
-            coords_orig2 = np.column_stack([coords_rotated2[:, 1], h - coords_rotated2[:, 0]])
-        elif rotation_angle == 180:
+        elif rotation_angle1 == 180:
             coords_orig1 = np.column_stack([w - coords_rotated1[:, 0], h - coords_rotated1[:, 1]])
-            coords_orig2 = np.column_stack([w - coords_rotated2[:, 0], h - coords_rotated2[:, 1]])
-        elif rotation_angle == 270:
+        elif rotation_angle1 == 270:
             coords_orig1 = np.column_stack([w - coords_rotated1[:, 1], coords_rotated1[:, 0]])
-            coords_orig2 = np.column_stack([w - coords_rotated2[:, 1], coords_rotated2[:, 0]])
     else:
         coords_orig1 = coords_rotated1
+        
+    # Handle image 2 inverse rotation
+    if rotation_angle2 != 0:
+        if rotation_angle2 == 90:
+            coords_orig2 = np.column_stack([coords_rotated2[:, 1], h - coords_rotated2[:, 0]])
+        elif rotation_angle2 == 180:
+            coords_orig2 = np.column_stack([w - coords_rotated2[:, 0], h - coords_rotated2[:, 1]])
+        elif rotation_angle2 == 270:
+            coords_orig2 = np.column_stack([w - coords_rotated2[:, 1], coords_rotated2[:, 0]])
+    else:
         coords_orig2 = coords_rotated2
     
     return coords_orig1, coords_orig2
@@ -1179,22 +1048,22 @@ def transform_single_image_coordinates_to_rectified_vectorized(rect_params: Dict
         dist = np.array(rect_params['dist1'])
         R_rect = np.array(rect_params['R1_rect'])
         P = np.array(rect_params['P1'])
+        rotation_angle = rect_params.get('rotation_angle1', 0)
     elif image_id == 2:
         K = np.array(rect_params['K2'])
         K_rotated = np.array(rect_params['K2_rotated'])
         dist = np.array(rect_params['dist2'])
         R_rect = np.array(rect_params['R2_rect'])
         P = np.array(rect_params['P2'])
+        rotation_angle = rect_params.get('rotation_angle2', 0)
     else:
         raise ValueError(f"Invalid image_id: {image_id}. Must be 1 or 2.")
     
     # Ensure input is numpy array
     coords = np.array(coords, dtype=np.float32)
-    rotation_angle = rect_params.get('rotation_angle', 0)
     image_size = tuple(rect_params['image_size'])
     
     # Step 1: Apply rotation if needed
-    rotation_angle = rect_params.get('rotation_angle', 0)
     
     if rotation_angle != 0:
         # Apply rotation to coordinates vectorized
@@ -1244,18 +1113,19 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
         R_rect = np.array(rect_params['R1_rect'])
         P = np.array(rect_params['P1'])
         roi = rect_params.get('roi1', (0, 0, 0, 0))
+        rotation_angle = rect_params.get('rotation_angle1', 0)
     elif image_id == 2:
         K = np.array(rect_params['K2'])
         K_rotated = np.array(rect_params['K2_rotated'])
         R_rect = np.array(rect_params['R2_rect'])
         P = np.array(rect_params['P2'])
         roi = rect_params.get('roi2', (0, 0, 0, 0))
+        rotation_angle = rect_params.get('rotation_angle2', 0)
     else:
         raise ValueError(f"Invalid image_id: {image_id}. Must be 1 or 2.")
     
     # Ensure input is numpy array
     coords_rect = np.array(coords_rect, dtype=np.float64)
-    rotation_angle = rect_params.get('rotation_angle', 0)
     image_size = tuple(rect_params['image_size'])
     
     # Step 1: Convert cropped rectified coordinates to uncropped coordinates
@@ -1284,8 +1154,6 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     coords_rotated = coords_rotated_hom[:, :2] / coords_rotated_hom[:, 2:3]
     
     # Step 6: Apply inverse rotation if needed
-    rotation_angle = rect_params.get('rotation_angle', 0)
-    
     if rotation_angle != 0:
         # Apply inverse rotation to coordinates vectorized
         w, h = image_size
@@ -1301,17 +1169,10 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     return coords_orig
 
 def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, images_path: Path, output_dir: Path, alpha: float = 0.0) -> Dict[str, Any]:
-    """
-    Initialize rectification with proper left/right ordering.
-    Since we now always do horizontal rectification, we just need to ensure proper ordering.
-    """
-    rect_info = compute_stereo_rectification(reconstruction, img1_id, img2_id, images_path, output_dir, alpha)
-    
-    # Since we always do horizontal rectification now, just check left/right ordering
-    if rect_info['left'] == rect_info['img1_id'] and rect_info['right'] == rect_info['img2_id']:
-        return rect_info
-    else:
-        return compute_stereo_rectification(reconstruction, img2_id, img1_id, images_path, output_dir, alpha)
+    C1 = reconstruction.get_camera_center(img1_id)
+    C2 = reconstruction.get_camera_center(img2_id)
+    im_left, im_right = _determine_image_order_by_camera_centers(C1, C2, img1_id, img2_id)
+    return compute_stereo_rectification(reconstruction, im_left, im_right, images_path, output_dir, alpha)
 
 
 def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, 

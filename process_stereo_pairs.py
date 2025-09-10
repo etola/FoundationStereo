@@ -33,7 +33,6 @@ from colmap_utils import ColmapReconstruction
 from rectify_stereo import (
     compute_stereo_rectification, 
     rectify_images,
-    determine_rectification_type,
     transform_coordinates_from_rectified_vectorized
 )
 from core.utils.utils import InputPadder
