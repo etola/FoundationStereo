@@ -400,8 +400,30 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
         flags=cv2.CALIB_ZERO_DISPARITY, alpha=alpha
     )
     
+    # Check for degenerate stereo rectification results when alpha=1.0 --> opencv bug happens sometimes for alpha=1.0
+    original_alpha = alpha
+    roi1_valid = roi1[2] > 0 and roi1[3] > 0  # width > 0 and height > 0
+    roi2_valid = roi2[2] > 0 and roi2[3] > 0
+    focal_lengths_valid = P1[0,0] > 0 and P1[1,1] > 0 and P2[0,0] > 0 and P2[1,1] > 0
+    
+    if alpha == 1.0 and (not roi1_valid or not roi2_valid or not focal_lengths_valid):
+        print(f"  Debug: Alpha=1.0 produced degenerate results - falling back to alpha=0.0")
+        print(f"    ROI validity: ROI1={roi1_valid}, ROI2={roi2_valid}")
+        print(f"    Focal length validity: {focal_lengths_valid}")
+        print(f"    Original ROI1: {roi1}, ROI2: {roi2}")
+        print(f"    Original P1 fx: {P1[0,0]:.2f}, P2 fx: {P2[0,0]:.2f}")
+        
+        # Fallback to alpha=0.0
+        alpha = 0.0
+        R1_rect, R2_rect, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
+            K1_rotated, dist1, K2_rotated, dist2, image_size_rotated, R_rel_rotated, t_rel_rotated,
+            flags=cv2.CALIB_ZERO_DISPARITY, alpha=alpha
+        )
+        print(f"    Fallback ROI1: {roi1}, ROI2: {roi2}")
+        print(f"    Fallback P1 fx: {P1[0,0]:.2f}, P2 fx: {P2[0,0]:.2f}")
+    
     print(f"  Debug: Stereo rectification output:")
-    print(f"    Alpha parameter: {alpha}")
+    print(f"    Alpha parameter: {original_alpha} (used: {alpha})")
     print(f"    P1 fx: {P1[0,0]:.2f}, fy: {P1[1,1]:.2f}, cx: {P1[0,2]:.2f}, cy: {P1[1,2]:.2f}")
     print(f"    P2 fx: {P2[0,0]:.2f}, fy: {P2[1,1]:.2f}, cx: {P2[0,2]:.2f}, cy: {P2[1,2]:.2f}")
     print(f"    ROI1: {roi1}, ROI2: {roi2}")
@@ -449,6 +471,7 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
         'image_size': image_size,
         'image_size_rotated': image_size_rotated,
         'alpha': alpha,
+        'original_alpha': original_alpha,  # Store the originally requested alpha
         'roi1': roi1,
         'roi2': roi2
     }
@@ -668,9 +691,10 @@ def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -
     img1_rect = cv2.remap(img1, map1_x, map1_y, cv2.INTER_LINEAR)
     img2_rect = cv2.remap(img2, map2_x, map2_y, cv2.INTER_LINEAR)
     
-    # Apply custom cropping when alpha=1 to maintain rectification and identical sizes
-    alpha = rect_params.get('alpha', 0.0)
-    if alpha == 1.0:
+    # Apply custom cropping when original alpha=1 to maintain rectification and identical sizes
+    # Even if we fell back to alpha=0 due to degenerate results, we still want custom cropping
+    original_alpha = rect_params.get('original_alpha', rect_params.get('alpha', 0.0))
+    if original_alpha == 1.0:
         img1_cropped, img2_cropped, mask1, mask2, updated_rect_params = apply_custom_roi_cropping_with_alignment(
             img1_rect, img2_rect, rect_params
         )
@@ -684,7 +708,7 @@ def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -
     
     # Save rectified images for debugging
     if debug_output_dir:
-        if alpha == 1.0:
+        if original_alpha == 1.0:
             # Save original rectified images (before custom cropping)
             img1_rect_full = cv2.remap(img1, map1_x, map1_y, cv2.INTER_LINEAR)
             img2_rect_full = cv2.remap(img2, map2_x, map2_y, cv2.INTER_LINEAR)
@@ -701,7 +725,10 @@ def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -
             
             # Print debug information
             padding_info = rect_params['custom_padding']
+            used_alpha = rect_params.get('alpha', 0.0)
             print(f"  Debug: Saved rectified images with custom cropping to {debug_output_dir}")
+            if used_alpha != original_alpha:
+                print(f"  Debug: Applied fallback from alpha={original_alpha} to alpha={used_alpha} due to degenerate results")
             print(f"  Debug: Original ROI1: {rect_params['roi1_original']}")
             print(f"  Debug: Original ROI2: {rect_params['roi2_original']}")
             print(f"  Debug: Custom ROI1: {rect_params['roi1_custom']}")
