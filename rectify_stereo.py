@@ -15,6 +15,7 @@ Example:
 
 import argparse
 import json
+from operator import is_
 import os
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ import numpy as np
 from colmap_utils import ColmapReconstruction
 
 
-def _determine_camera_rotations(R1: np.ndarray, R2: np.ndarray, t_rel: np.ndarray) -> Tuple[int, int]:
+def _determine_camera_rotations(R1: np.ndarray, R2: np.ndarray, t_rel: np.ndarray, is_vertical: bool) -> Tuple[int, int]:
     """
     Determine individual rotations needed for each camera to align up vectors and make stereo horizontal.
     
@@ -34,7 +35,7 @@ def _determine_camera_rotations(R1: np.ndarray, R2: np.ndarray, t_rel: np.ndarra
         R1: Rotation matrix of first camera (cam_from_world)
         R2: Rotation matrix of second camera (cam_from_world)
         t_rel: Relative translation vector between cameras
-        
+        is_vertical: Whether the stereo pair is vertically aligned
     Returns:
         Tuple of (rotation_angle_1, rotation_angle_2) in degrees: 0, 90, 180, or 270
     """
@@ -46,7 +47,7 @@ def _determine_camera_rotations(R1: np.ndarray, R2: np.ndarray, t_rel: np.ndarra
     
     # Target up direction in world coordinates (e.g., negative Y for standard "up")
     target_up = np.array([0, -1, 0])
-    
+
     def _find_rotation_to_align_up(up_vector):
         """Find the rotation angle (0, 90, 180, 270) that best aligns up_vector with target_up"""
         # Test each rotation and see which gives the best alignment
@@ -102,7 +103,26 @@ def _determine_camera_rotations(R1: np.ndarray, R2: np.ndarray, t_rel: np.ndarra
         if y_dominance > 0.7:
             rotation1 = (rotation1 + 90) % 360
             rotation2 = (rotation2 + 90) % 360
+
+    R_rotation1 = _get_rotation_matrix(rotation1)
     
+    R1_rotated = R_rotation1 @ R1
+    up_vector = R1_rotated[1, :]
+
+    print(f"bef {rotation1} {rotation2}")
+
+    if is_vertical:
+        if np.dot(up_vector, np.array([-1, 0, 0])) < 0:
+            rotation1 = (rotation1 + 180) % 360
+            rotation2 = (rotation2 + 180) % 360
+    else:
+        if np.dot(up_vector, np.array([0, -1, 0])) < 0:
+            rotation1 = (rotation1 + 180) % 360
+            rotation2 = (rotation2 + 180) % 360
+
+    print(f"aft {rotation1} {rotation2}")
+
+
     return rotation1, rotation2
 
 
@@ -239,6 +259,17 @@ def _apply_inverse_rotation_to_coordinates(coords: Tuple[float, float],
     else:
         raise ValueError(f"Unsupported rotation angle: {rotation_angle}")
 
+def _is_vertical_alignment(C1: np.ndarray, C2: np.ndarray) -> bool:
+
+    # Calculate the vector between camera centers
+    center_diff = C2 - C1
+
+    # Determine if alignment is mostly vertical or horizontal
+    abs_dx = abs(center_diff[0])  # Horizontal separation
+    abs_dy = abs(center_diff[1])  # Vertical separation
+
+    return abs_dy > abs_dx
+
 
 def _determine_image_order_by_camera_centers(C1: np.ndarray, C2: np.ndarray, img1_id: int, img2_id: int) -> Tuple[int, int]:
     """
@@ -253,17 +284,8 @@ def _determine_image_order_by_camera_centers(C1: np.ndarray, C2: np.ndarray, img
     Returns:
         Tuple of (first_image_id, second_image_id) in proper order
     """
-    # Calculate the vector between camera centers
-    center_diff = C2 - C1
-    
-    # Determine if alignment is mostly vertical or horizontal
-    abs_dx = abs(center_diff[0])  # Horizontal separation
-    abs_dy = abs(center_diff[1])  # Vertical separation
-    
-    print(f"  Debug: Camera center difference: [{center_diff[0]:.6f}, {center_diff[1]:.6f}, {center_diff[2]:.6f}]")
-    print(f"  Debug: Horizontal separation: {abs_dx:.6f}, Vertical separation: {abs_dy:.6f}")
-    
-    if abs_dy > abs_dx:
+
+    if _is_vertical_alignment(C1, C2):
         # Mostly vertical alignment - order by Y coordinate (smaller Y first)
         print(f"  Debug: Vertical alignment detected")
         if C1[1] < C2[1]:
@@ -309,8 +331,6 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     
     C1 = -R1.T @ t1
     C2 = -R2.T @ t2
-    print(f"    C1: [{C1[0]:.6f}, {C1[1]:.6f}, {C1[2]:.6f}]")
-    print(f"    C2: [{C2[0]:.6f}, {C2[1]:.6f}, {C2[2]:.6f}]")
 
     # Get distortion parameters
     _, dist1 = reconstruction.get_camera_distortion_params(img1_id)
@@ -326,7 +346,7 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     t_rel = t2 - R_rel @ t1
     
     # Determine required rotations for each camera based on their orientations and baseline
-    rotation_angle1, rotation_angle2 = _determine_camera_rotations(R1, R2, t_rel)
+    rotation_angle1, rotation_angle2 = _determine_camera_rotations(R1, R2, t_rel, _is_vertical_alignment(C1, C2))
     
     # Apply rotations if needed
     R_rotation1 = _get_rotation_matrix(rotation_angle1)
@@ -334,6 +354,9 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     K1_rotated, image_size_rotated1 = _update_intrinsics_for_rotation(K1, image_size, rotation_angle1)
     K2_rotated, image_size_rotated2 = _update_intrinsics_for_rotation(K2, image_size, rotation_angle2)
     
+    R1_rotated = R_rotation1 @ R1
+    R2_rotated = R_rotation2 @ R2
+
     # For simplicity, use the first camera's rotated image size
     # (both should be the same if rotations are 0/180 or both are 90/270)
     image_size_rotated = image_size_rotated1
@@ -405,6 +428,10 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
         'R2': R2.tolist(),
         't1': t1.tolist(),
         't2': t2.tolist(),
+        'C1': C1.tolist(),
+        'C2': C2.tolist(),
+        'R1_rotated': R1_rotated.tolist(),
+        'R2_rotated': R2_rotated.tolist(),
         'R_rel': R_rel.tolist(),
         't_rel': t_rel.tolist(),
         'R_rel_rotated': R_rel_rotated.tolist(),
