@@ -106,37 +106,6 @@ def _determine_camera_rotations(R1: np.ndarray, R2: np.ndarray, t_rel: np.ndarra
     return rotation1, rotation2
 
 
-def _is_vertically_aligned(R_rel: np.ndarray, t_rel: np.ndarray) -> bool:
-    """
-    Check if the stereo pair is vertically aligned based on relative pose.
-    
-    Args:
-        R_rel: Relative rotation matrix between cameras
-        t_rel: Relative translation vector between cameras
-        
-    Returns:
-        True if vertically aligned, False if horizontally aligned
-    """
-    # Check if the translation is primarily in the Y direction (vertical)
-    # and the rotation is primarily around the X axis
-    t_rel_norm = np.linalg.norm(t_rel)
-    if t_rel_norm < 1e-6:
-        return False
-    
-    # Normalize translation vector
-    t_rel_normalized = t_rel / t_rel_norm
-    
-    # Check if Y component is dominant (vertical alignment)
-    y_dominance = abs(t_rel_normalized[1])
-    x_dominance = abs(t_rel_normalized[0])
-    
-    # Consider it vertical if Y translation is dominant
-    # The Y dominance alone is sufficient to determine vertical alignment
-    is_vertical = y_dominance > 0.7
-    
-    return is_vertical
-
-
 def _get_rotation_matrix(rotation_angle: int) -> np.ndarray:
     """
     Get rotation matrix for image rotation.
