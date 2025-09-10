@@ -116,7 +116,7 @@ def _determine_camera_rotations(R1: np.ndarray, R2: np.ndarray, t_rel: np.ndarra
             rotation1 = (rotation1 + 180) % 360
             rotation2 = (rotation2 + 180) % 360
     else:
-        if np.dot(up_vector, np.array([0, -1, 0])) < 0:
+        if np.dot(up_vector, np.array([0, -1, 0])) > 0:
             rotation1 = (rotation1 + 180) % 360
             rotation2 = (rotation2 + 180) % 360
 
@@ -511,8 +511,8 @@ def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -
     
     # Save rotated images for debugging
     if debug_output_dir and (rotation_angle1 != 0 or rotation_angle2 != 0):
-        imageio.imwrite(str(debug_output_dir / f'img1_rotated_{rotation_angle1}deg.jpg'), img1)
-        imageio.imwrite(str(debug_output_dir / f'img2_rotated_{rotation_angle2}deg.jpg'), img2)
+        imageio.imwrite(str(debug_output_dir / f'img1_rotated.jpg'), img1)
+        imageio.imwrite(str(debug_output_dir / f'img2_rotated.jpg'), img2)
         print(f"  Debug: Saved rotated images to {debug_output_dir}")
     
     # Reconstruct rectification parameters
