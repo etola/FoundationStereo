@@ -27,6 +27,7 @@ import argparse
 import sys
 from pathlib import Path
 from typing import Dict, Any, Tuple
+import imageio
 
 
 def mark_coordinate_on_image(image_path: str, x: float, y: float, output_path: str, 
@@ -42,7 +43,7 @@ def mark_coordinate_on_image(image_path: str, x: float, y: float, output_path: s
         radius: Radius of the circle marker
     """
     # Load image
-    img = cv2.imread(image_path)
+    img = imageio.imread(image_path)
     if img is None:
         raise ValueError(f"Could not load image: {image_path}")
     
@@ -61,7 +62,7 @@ def mark_coordinate_on_image(image_path: str, x: float, y: float, output_path: s
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     
     # Save image
-    cv2.imwrite(output_path, img)
+    imageio.imwrite(output_path, img)
 
 
 def run_debug_tests(rect_params: Dict[str, Any], 
@@ -795,8 +796,8 @@ def main():
     try:
         debug_dir = output_dir / 'debug_stages'
         rect1_img, rect2_img = rectify_images(rect_params, debug_dir)
-        cv2.imwrite(rect_params['rect1_path'], rect1_img)
-        cv2.imwrite(rect_params['rect2_path'], rect2_img)
+        imageio.imwrite(rect_params['rect1_path'], rect1_img)
+        imageio.imwrite(rect_params['rect2_path'], rect2_img)
     except Exception as e:
         print(f"Error rectifying images: {e}")
         sys.exit(1)
