@@ -172,7 +172,7 @@ def _update_intrinsics_for_rotation(K: np.ndarray, image_size: Tuple[int, int],
         # 90-degree clockwise: swap fx↔fy, cx↔cy, adjust for new dimensions
         K_rot = np.array([
             [K[1,1], 0, K[1,2]],  # fy, 0, cy
-            [0, K[0,0], h - K[0,2]],  # 0, fx, height-cx
+            [0, K[0,0], K[0,2]],  # 0, fx, cx
             [0, 0, 1]
         ])
         return K_rot, (h, w)  # Swap width and height
@@ -185,9 +185,9 @@ def _update_intrinsics_for_rotation(K: np.ndarray, image_size: Tuple[int, int],
         ])
         return K_rot, image_size  # Keep same dimensions
     elif rotation_angle == 270:
-        # 270-degree clockwise: swap fx↔fy, adjust for new dimensions
+        # 270-degree clockwise: swap fx↔fy, cx↔cy, adjust for new dimensions
         K_rot = np.array([
-            [K[1,1], 0, w - K[1,2]],  # fy, 0, width-cy
+            [K[1,1], 0, K[1,2]],  # fy, 0, cy
             [0, K[0,0], K[0,2]],  # 0, fx, cx
             [0, 0, 1]
         ])
@@ -387,6 +387,13 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     print(f"    t_rel_rotated: [{t_rel_rotated[0]:.6f}, {t_rel_rotated[1]:.6f}, {t_rel_rotated[2]:.6f}]")
     print(f"    t_rel_rotated norm: {np.linalg.norm(t_rel_rotated):.6f}")
     
+    # Check if the rotated translation is properly horizontal
+    t_rel_rotated_norm = np.linalg.norm(t_rel_rotated)
+    if t_rel_rotated_norm > 1e-6:
+        t_rel_rotated_normalized = t_rel_rotated / t_rel_rotated_norm
+        print(f"    t_rel_rotated normalized: [{t_rel_rotated_normalized[0]:.6f}, {t_rel_rotated_normalized[1]:.6f}, {t_rel_rotated_normalized[2]:.6f}]")
+        print(f"    Horizontal component (X): {abs(t_rel_rotated_normalized[0]):.6f}")
+        print(f"    Vertical component (Y): {abs(t_rel_rotated_normalized[1]):.6f}")
 
     y_world = -R_rel[1, :]
     y_world_rotated = -R_rel_rotated[1, :]
@@ -394,6 +401,16 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     print(f"    y_world_rotated: [{y_world_rotated[0]:.6f}, {y_world_rotated[1]:.6f}, {y_world_rotated[2]:.6f}]")
 
 
+    # Debug: Print matrices being passed to stereoRectify
+    print(f"  Debug: Matrices passed to cv2.stereoRectify:")
+    print(f"    K1_rotated:\n{K1_rotated}")
+    print(f"    K2_rotated:\n{K2_rotated}")
+    print(f"    R_rel_rotated:\n{R_rel_rotated}")
+    print(f"    t_rel_rotated: {t_rel_rotated}")
+    print(f"    image_size_rotated: {image_size_rotated}")
+    print(f"    dist1: {dist1}")
+    print(f"    dist2: {dist2}")
+    
     # Stereo rectification using OpenCV functions (now always horizontal)
     R1_rect, R2_rect, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
         K1_rotated, dist1, K2_rotated, dist2, image_size_rotated, R_rel_rotated, t_rel_rotated,
