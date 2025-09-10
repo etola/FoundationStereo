@@ -616,6 +616,9 @@ def apply_custom_roi_cropping_with_alignment(img1_rect: np.ndarray, img2_rect: n
     updated_rect_params['roi1'] = new_roi1
     updated_rect_params['roi2'] = new_roi2
     
+    # DON'T update P1/P2 matrices here - coordinate transformation functions handle custom padding separately
+    # Keep original P1/P2 for undistortPoints, then apply custom cropping in the coordinate transform functions
+    
     return img1_cropped, img2_cropped, mask1, mask2, updated_rect_params
 
 
@@ -729,6 +732,14 @@ def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -
             print(f"  Debug: Saved rectified images with custom cropping to {debug_output_dir}")
             if used_alpha != original_alpha:
                 print(f"  Debug: Applied fallback from alpha={original_alpha} to alpha={used_alpha} due to degenerate results")
+            
+            # Show intrinsics info (P1/P2 matrices remain unchanged for coordinate transforms)
+            P1 = np.array(rect_params['P1'])
+            P2 = np.array(rect_params['P2'])
+            print(f"  Debug: Intrinsics for coordinate transformation (unchanged):")
+            print(f"    P1 fx: {P1[0,0]:.2f}, fy: {P1[1,1]:.2f}, cx: {P1[0,2]:.2f}, cy: {P1[1,2]:.2f}")
+            print(f"    P2 fx: {P2[0,0]:.2f}, fy: {P2[1,1]:.2f}, cx: {P2[0,2]:.2f}, cy: {P2[1,2]:.2f}")
+            print(f"  Debug: Custom padding applied in coordinate transformation functions")
             print(f"  Debug: Original ROI1: {rect_params['roi1_original']}")
             print(f"  Debug: Original ROI2: {rect_params['roi2_original']}")
             print(f"  Debug: Custom ROI1: {rect_params['roi1_custom']}")
@@ -1572,7 +1583,17 @@ def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2
         P2 = np.array(rect_info['P2'])
         
         # The rectified K matrix is the same for both cameras (K_rect = P1[:, :3] = P2[:, :3])
-        K_rect = P1[:, :3]
+        K_rect = P1[:, :3].copy()
+        
+        # Adjust intrinsics for custom cropping if applied
+        if 'custom_padding' in rect_info:
+            padding_info = rect_info['custom_padding']
+            roi1_custom = rect_info['roi1_custom']
+            
+            # Adjust principal point for custom cropping and padding
+            # The K matrix should reflect the coordinate system of the final cropped images
+            K_rect[0, 2] = K_rect[0, 2] - roi1_custom[0]  # cx: subtract crop x offset
+            K_rect[1, 2] = K_rect[1, 2] - roi1_custom[1] + padding_info['pad_top_1']  # cy: subtract crop y offset, add top padding
         
         # Calculate baseline from relative translation
         t_rel = np.array(rect_info['t_rel'])
