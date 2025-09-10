@@ -303,7 +303,7 @@ def _determine_image_order_by_camera_centers(C1: np.ndarray, C2: np.ndarray, img
 
 
 def compute_stereo_rectification(reconstruction: ColmapReconstruction, 
-                                img1_id: int, img2_id: int, images_path: Path, output_dir: Path, alpha: float = 0.0) -> Dict[str, Any]:
+                                img1_id: int, img2_id: int, images_path: Path, output_dir: Path, alpha: float = 1.0) -> Dict[str, Any]:
     """
     Compute stereo rectification parameters for two images.
     If images are vertically aligned, applies 90-degree rotation first, then horizontal rectification.
@@ -314,7 +314,7 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
         img2_id: Second image ID
         images_path: Path to images directory
         output_dir: Output directory
-        alpha: Free scaling parameter (0.0=more crop, 1.0=less crop)
+        alpha: Free scaling parameter (0.0=more crop, 1.0=less crop, default: 1.0)
         
     Returns:
         Dictionary containing rectification parameters
@@ -1455,7 +1455,7 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     
     return coords_orig
 
-def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, images_path: Path, output_dir: Path, alpha: float = 0.0) -> Dict[str, Any]:
+def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, images_path: Path, output_dir: Path, alpha: float = 1.0) -> Dict[str, Any]:
     C1 = reconstruction.get_camera_center(img1_id)
     C2 = reconstruction.get_camera_center(img2_id)
     im_left, im_right = _determine_image_order_by_camera_centers(C1, C2, img1_id, img2_id)
@@ -1463,7 +1463,7 @@ def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, 
 
 
 def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, 
-                       images_path: Path, output_dir: Path, pair_index: int = None, debug: bool = False, alpha: float = 0.0) -> bool:
+                       images_path: Path, output_dir: Path, pair_index: int = None, debug: bool = False, alpha: float = 1.0) -> bool:
     """
     Process a single stereo pair for rectification.
     
@@ -1475,7 +1475,7 @@ def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2
         output_dir: Output directory for this pair
         pair_index: Optional pair index for consecutive naming (pair_00, pair_01, etc.)
         debug: Whether to save intermediate debug images
-        alpha: Free scaling parameter for rectification (0.0=more crop, 1.0=less crop)
+        alpha: Free scaling parameter for rectification (0.0=more crop, 1.0=less crop, default: 1.0)
         
     Returns:
         True if successful, False otherwise
@@ -1488,7 +1488,7 @@ def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2
             pair_dir = output_dir / f"pair_{img1_id:03d}_{img2_id:03d}"
         pair_dir.mkdir(exist_ok=True)
         
-        print(f"Processing pair: {img1_id} - {img2_id}")
+        print(f"Processing pair ({pair_index}): {img1_id} - {img2_id}")
         
         # Compute rectification
         rect_info = initalize_rectification(reconstruction, img1_id, img2_id, images_path, pair_dir, alpha)
@@ -1565,7 +1565,7 @@ def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2
         return False
 
 
-def process_all_pairs(reconstruction: ColmapReconstruction, images_path: Path, output_dir: Path, pairs_per_image: int = 1, debug: bool = False, alpha: float = 0.0) -> None:
+def process_all_pairs(reconstruction: ColmapReconstruction, images_path: Path, output_dir: Path, pairs_per_image: int = 1, debug: bool = False, alpha: float = 1.0) -> None:
     """
     Process all stereo pairs from the reconstruction.
     
@@ -1575,7 +1575,7 @@ def process_all_pairs(reconstruction: ColmapReconstruction, images_path: Path, o
         output_dir: Output directory
         pairs_per_image: Number of stereo pairs per image to process
         debug: Whether to save intermediate debug images
-        alpha: Free scaling parameter for rectification (0.0=more crop, 1.0=less crop)
+        alpha: Free scaling parameter for rectification (0.0=more crop, 1.0=less crop, default: 1.0)
     """
     print("Getting best stereo pairs from reconstruction...")
     
@@ -1627,8 +1627,8 @@ def main():
                        help='Number of stereo pairs per image to process (default: 1)')
     parser.add_argument('--debug', action='store_true',
                        help='Save intermediate debug images at each transformation stage')
-    parser.add_argument('--alpha', type=float, default=0.0,
-                       help='Alpha parameter for stereo rectification (0.0=more crop, 1.0=less crop, default: 0.0)')
+    parser.add_argument('--alpha', type=float, default=1.0,
+                       help='Alpha parameter for stereo rectification (0.0=more crop, 1.0=less crop, default: 1.0)')
     parser.add_argument('img_id1', type=int, nargs='?', help='First image ID (required if not using --all-pairs)')
     parser.add_argument('img_id2', type=int, nargs='?', help='Second image ID (required if not using --all-pairs)')
     
