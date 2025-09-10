@@ -486,8 +486,8 @@ def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -
     # Save original images for debugging
     if debug_output_dir:
         debug_output_dir.mkdir(exist_ok=True)
-        imageio.imwrite(str(debug_output_dir / 'img1_original.jpg'), img1)
-        imageio.imwrite(str(debug_output_dir / 'img2_original.jpg'), img2)
+        imageio.imwrite(str(debug_output_dir / 'img1_0_original.jpg'), img1)
+        imageio.imwrite(str(debug_output_dir / 'img2_0_original.jpg'), img2)
         print(f"  Debug: Saved original images to {debug_output_dir}")
     
     # Check if rotation is needed for each image individually
@@ -511,8 +511,8 @@ def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -
     
     # Save rotated images for debugging
     if debug_output_dir and (rotation_angle1 != 0 or rotation_angle2 != 0):
-        imageio.imwrite(str(debug_output_dir / f'img1_rotated.jpg'), img1)
-        imageio.imwrite(str(debug_output_dir / f'img2_rotated.jpg'), img2)
+        imageio.imwrite(str(debug_output_dir / f'img1_1_rotated.jpg'), img1)
+        imageio.imwrite(str(debug_output_dir / f'img2_1_rotated.jpg'), img2)
         print(f"  Debug: Saved rotated images to {debug_output_dir}")
     
     # Reconstruct rectification parameters
@@ -536,8 +536,8 @@ def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -
     
     # Save rectified images for debugging
     if debug_output_dir:
-        imageio.imwrite(str(debug_output_dir / 'img1_rectified_final.jpg'), img1_rect)
-        imageio.imwrite(str(debug_output_dir / 'img2_rectified_final.jpg'), img2_rect)
+        imageio.imwrite(str(debug_output_dir / 'img1_2_rectified.jpg'), img1_rect)
+        imageio.imwrite(str(debug_output_dir / 'img2_2_rectified.jpg'), img2_rect)
         print(f"  Debug: Saved final rectified images to {debug_output_dir}")
         
         # Save rectification info as text for debugging
