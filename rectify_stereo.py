@@ -302,6 +302,76 @@ def _determine_image_order_by_camera_centers(C1: np.ndarray, C2: np.ndarray, img
 
 
 
+def save_rectification_json(pair_dir: Path, rect_info: dict) -> None:
+    """
+    Save rectification information as JSON with numpy types converted to Python native types.
+    
+    Args:
+        pair_dir: Directory where rectification.json should be saved
+        rect_info: Dictionary containing rectification information with potential numpy types
+    """
+    rect_info_path = pair_dir / 'rectification.json'
+    
+    # Convert numpy types to Python native types for JSON serialization
+    rect_info_json = {}
+    for key, value in rect_info.items():
+        if isinstance(value, np.ndarray):
+            rect_info_json[key] = value.tolist()
+        elif isinstance(value, np.bool_):
+            rect_info_json[key] = bool(value)
+        elif isinstance(value, np.integer):
+            rect_info_json[key] = int(value)
+        elif isinstance(value, np.floating):
+            rect_info_json[key] = float(value)
+        else:
+            rect_info_json[key] = value
+    
+    with open(rect_info_path, 'w') as f:
+        json.dump(rect_info_json, f, indent=2)
+
+
+def save_rectified_intrinsics(pair_dir: Path, rect_info: dict) -> None:
+    """
+    Save rectified camera intrinsics and baseline to intrinsics.txt file.
+    
+    Args:
+        pair_dir: Directory where intrinsics.txt should be saved
+        rect_info: Dictionary containing rectification information with keys:
+                  - 'P1', 'P2': Projection matrices
+                  - 'custom_padding': Optional padding information
+                  - 'roi1_custom': Optional custom ROI
+                  - 't_rel': Relative translation vector
+    """
+    intrinsics_path = pair_dir / 'intrinsics.txt'
+    
+    # Extract rectified K matrix from projection matrices
+    P1 = np.array(rect_info['P1'])
+    P2 = np.array(rect_info['P2'])
+    
+    # The rectified K matrix is the same for both cameras (K_rect = P1[:, :3] = P2[:, :3])
+    K_rect = P1[:, :3].copy()
+    
+    # Adjust intrinsics for custom cropping if applied
+    if 'custom_padding' in rect_info:
+        padding_info = rect_info['custom_padding']
+        roi1_custom = rect_info['roi1_custom']
+        
+        # Adjust principal point for custom cropping and padding
+        # The K matrix should reflect the coordinate system of the final cropped images
+        K_rect[0, 2] = K_rect[0, 2] - roi1_custom[0]  # cx: subtract crop x offset
+        K_rect[1, 2] = K_rect[1, 2] - roi1_custom[1] + padding_info['pad_top_1']  # cy: subtract crop y offset, add top padding
+    
+    # Calculate baseline from relative translation
+    t_rel = np.array(rect_info['t_rel'])
+    baseline = np.linalg.norm(t_rel)
+    
+    with open(intrinsics_path, 'w') as f:
+        # Write rectified K matrix
+        f.write(f"{K_rect[0,0]:.6f} {K_rect[0,1]:.6f} {K_rect[0,2]:.6f} {K_rect[1,0]:.6f} {K_rect[1,1]:.6f} {K_rect[1,2]:.6f} {K_rect[2,0]:.6f} {K_rect[2,1]:.6f} {K_rect[2,2]:.6f}\n")
+        # Write baseline
+        f.write(f"{baseline:.6f}\n")
+
+
 def compute_stereo_rectification(reconstruction: ColmapReconstruction, 
                                 img1_id: int, img2_id: int, images_path: Path, output_dir: Path, alpha: float = 1.0) -> Dict[str, Any]:
     """
@@ -1573,54 +1643,10 @@ def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2
         rect_info['rect2_path'] = str(right_img_path)
         
         # Save rectification info
-        rect_info_path = pair_dir / 'rectification.json'
-        
-        # Convert numpy types to Python native types for JSON serialization
-        rect_info_json = {}
-        for key, value in rect_info.items():
-            if isinstance(value, np.ndarray):
-                rect_info_json[key] = value.tolist()
-            elif isinstance(value, np.bool_):
-                rect_info_json[key] = bool(value)
-            elif isinstance(value, np.integer):
-                rect_info_json[key] = int(value)
-            elif isinstance(value, np.floating):
-                rect_info_json[key] = float(value)
-            else:
-                rect_info_json[key] = value
-        
-        with open(rect_info_path, 'w') as f:
-            json.dump(rect_info_json, f, indent=2)
+        save_rectification_json(pair_dir, rect_info)
         
         # Save intrinsics.txt file
-        intrinsics_path = pair_dir / 'intrinsics.txt'
-        
-        # Extract rectified K matrix from projection matrices
-        P1 = np.array(rect_info['P1'])
-        P2 = np.array(rect_info['P2'])
-        
-        # The rectified K matrix is the same for both cameras (K_rect = P1[:, :3] = P2[:, :3])
-        K_rect = P1[:, :3].copy()
-        
-        # Adjust intrinsics for custom cropping if applied
-        if 'custom_padding' in rect_info:
-            padding_info = rect_info['custom_padding']
-            roi1_custom = rect_info['roi1_custom']
-            
-            # Adjust principal point for custom cropping and padding
-            # The K matrix should reflect the coordinate system of the final cropped images
-            K_rect[0, 2] = K_rect[0, 2] - roi1_custom[0]  # cx: subtract crop x offset
-            K_rect[1, 2] = K_rect[1, 2] - roi1_custom[1] + padding_info['pad_top_1']  # cy: subtract crop y offset, add top padding
-        
-        # Calculate baseline from relative translation
-        t_rel = np.array(rect_info['t_rel'])
-        baseline = np.linalg.norm(t_rel)
-        
-        with open(intrinsics_path, 'w') as f:
-            # Write rectified K matrix
-            f.write(f"{K_rect[0,0]:.6f} {K_rect[0,1]:.6f} {K_rect[0,2]:.6f} {K_rect[1,0]:.6f} {K_rect[1,1]:.6f} {K_rect[1,2]:.6f} {K_rect[2,0]:.6f} {K_rect[2,1]:.6f} {K_rect[2,2]:.6f}\n")
-            # Write baseline
-            f.write(f"{baseline:.6f}\n")
+        save_rectified_intrinsics(pair_dir, rect_info)
         
         print(f"  ✓ Pair {img1_id}-{img2_id} completed successfully")
         return True

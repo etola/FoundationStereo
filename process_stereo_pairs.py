@@ -32,38 +32,14 @@ sys.path.append(code_dir)
 from colmap_utils import ColmapReconstruction
 from rectify_stereo import (
     initalize_rectification,
+    save_rectified_intrinsics,
+    save_rectification_json,
     rectify_images,
     transform_coordinates_from_rectified_vectorized
 )
 from core.utils.utils import InputPadder
 from Utils import *
 from core.foundation_stereo import *
-
-
-def convert_numpy_types_for_json(data: Any) -> Any:
-    """
-    Convert numpy types to Python native types for JSON serialization.
-    
-    Args:
-        data: Data that may contain numpy types
-        
-    Returns:
-        Data with numpy types converted to Python native types
-    """
-    if isinstance(data, np.ndarray):
-        return data.tolist()
-    elif isinstance(data, np.bool_):
-        return bool(data)
-    elif isinstance(data, np.integer):
-        return int(data)
-    elif isinstance(data, np.floating):
-        return float(data)
-    elif isinstance(data, dict):
-        return {key: convert_numpy_types_for_json(value) for key, value in data.items()}
-    elif isinstance(data, (list, tuple)):
-        return [convert_numpy_types_for_json(item) for item in data]
-    else:
-        return data
 
 
 def transpose_image_counter_clockwise(image: np.ndarray) -> np.ndarray:
@@ -321,11 +297,8 @@ def process_single_pair(
         rect_params = initalize_rectification(reconstruction, u_img1_id, u_img2_id, images_path, output_dir)
         img1_id = rect_params['img1_id']
         img2_id = rect_params['img2_id']
-
-        # Convert numpy types to Python native types for JSON serialization
-        rect_params_json = convert_numpy_types_for_json(rect_params)
-        with open(output_dir / 'rectification.json', 'w') as f:
-            json.dump(rect_params_json, f, indent=2)
+        save_rectified_intrinsics(output_dir, rect_params)
+        save_rectification_json(output_dir, rect_params)
 
         logging.info(f"Processing pair: {rect_params['img1_name']} (ID: {img1_id}) and {rect_params['img2_name']} (ID: {img2_id})")
 
