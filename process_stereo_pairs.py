@@ -31,7 +31,7 @@ sys.path.append(code_dir)
 
 from colmap_utils import ColmapReconstruction
 from rectify_stereo import (
-    compute_stereo_rectification, 
+    initalize_rectification,
     rectify_images,
     transform_coordinates_from_rectified_vectorized
 )
@@ -318,11 +318,10 @@ def process_single_pair(
         images_path = output_dir.parent.parent / 'images'
 
         # Compute stereo rectification
-        rect_params = compute_stereo_rectification(reconstruction, img1_id, img2_id, images_path, output_dir)
+        rect_params = initalize_rectification(reconstruction, img1_id, img2_id, images_path, output_dir)
         
         # Convert numpy types to Python native types for JSON serialization
         rect_params_json = convert_numpy_types_for_json(rect_params)
-        
         with open(output_dir / 'rectification.json', 'w') as f:
             json.dump(rect_params_json, f, indent=2)
 

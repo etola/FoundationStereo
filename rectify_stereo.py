@@ -112,11 +112,11 @@ def _determine_camera_rotations(R1: np.ndarray, R2: np.ndarray, t_rel: np.ndarra
     print(f"bef {rotation1} {rotation2}")
 
     if is_vertical:
-        if np.dot(up_vector, np.array([-1, 0, 0])) < 0:
+        if np.dot(up_vector, np.array([-1, 0, 0])) > 0:
             rotation1 = (rotation1 + 180) % 360
             rotation2 = (rotation2 + 180) % 360
     else:
-        if np.dot(up_vector, np.array([0, -1, 0])) > 0:
+        if np.dot(up_vector, np.array([0, -1, 0])) < 0:
             rotation1 = (rotation1 + 180) % 360
             rotation2 = (rotation2 + 180) % 360
 
