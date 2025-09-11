@@ -211,6 +211,48 @@ def compute_matching_coordinates_from_disparity(
     return left_coords, right_coords, selected_coords
 
 
+def create_validity_mask_from_padding(rect_params: dict, image_shape: Tuple[int, int], image_id: int = 1) -> np.ndarray:
+    """
+    Create validity mask for rectified image based on padding information.
+    
+    Args:
+        rect_params: Rectification parameters containing custom_padding info
+        image_shape: Shape of the rectified image (H, W)
+        image_id: 1 for left image, 2 for right image
+        
+    Returns:
+        Validity mask where True=valid pixels, False=padded/invalid pixels
+    """
+    H, W = image_shape
+    mask = np.ones((H, W), dtype=bool)
+    
+    # If no custom padding, entire image is valid
+    if 'custom_padding' not in rect_params:
+        return mask
+    
+    padding_info = rect_params['custom_padding']
+    
+    # Get padding values for the specified image
+    if image_id == 1:
+        pad_top = padding_info.get('pad_top_1', 0)
+        pad_bottom = padding_info.get('pad_bottom_1', 0)
+        pad_right = padding_info.get('pad_right_1', 0)
+    else:
+        pad_top = padding_info.get('pad_top_2', 0)
+        pad_bottom = padding_info.get('pad_bottom_2', 0)
+        pad_right = padding_info.get('pad_right_2', 0)
+    
+    # Mark padded regions as invalid
+    if pad_top > 0:
+        mask[:pad_top, :] = False  # Top padding
+    if pad_bottom > 0:
+        mask[H-pad_bottom:, :] = False  # Bottom padding
+    if pad_right > 0:
+        mask[:, W-pad_right:] = False  # Right padding
+    
+    return mask
+
+
 def visualize_matches(left_image: np.ndarray, right_image: np.ndarray, 
                      left_coords: np.ndarray, right_coords: np.ndarray,
                      max_matches: int = 50) -> np.ndarray:
@@ -420,6 +462,74 @@ def process_single_pair(
             rect1_img, rect2_img, model, args
         )
         
+        # Apply validity masks to disparity to exclude padded regions
+        validity_mask_left = create_validity_mask_from_padding(rect_params, rect1_img.shape[:2], image_id=1)
+        validity_mask_right = create_validity_mask_from_padding(rect_params, rect2_img.shape[:2], image_id=2)
+        
+        # Scale masks to match disparity resolution
+        if args.scale != 1.0:
+            validity_mask_left_scaled = cv2.resize(validity_mask_left.astype(np.uint8), 
+                                                 (disparity.shape[1], disparity.shape[0]), 
+                                                 interpolation=cv2.INTER_NEAREST).astype(bool)
+            validity_mask_right_scaled = cv2.resize(validity_mask_right.astype(np.uint8), 
+                                                  (disparity.shape[1], disparity.shape[0]), 
+                                                  interpolation=cv2.INTER_NEAREST).astype(bool)
+        else:
+            validity_mask_left_scaled = validity_mask_left
+            validity_mask_right_scaled = validity_mask_right
+        
+        # Create coordinate grids for disparity validation
+        H, W = disparity.shape
+        yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+        
+        # Calculate corresponding right image coordinates
+        right_x = xx - disparity
+        
+        # Check validity for both left and right image positions
+        valid_left = validity_mask_left_scaled  # Left image validity
+        
+        # Vectorized validity check for right image
+        # Create valid mask for finite disparity values and in-bounds coordinates
+        finite_disparity = np.isfinite(disparity)
+        in_bounds = (right_x >= 0) & (right_x < W)
+        
+        # Initialize right validity mask
+        valid_right = np.zeros_like(validity_mask_left_scaled, dtype=bool)
+        
+        # For valid coordinates, sample from right validity mask
+        valid_coords = finite_disparity & in_bounds
+        if np.any(valid_coords):
+            # Get row and column indices for valid coordinates
+            valid_rows, valid_cols = np.where(valid_coords)
+            right_x_coords = right_x[valid_coords].astype(int)
+            
+            # Sample right validity mask at corresponding coordinates
+            valid_right[valid_rows, valid_cols] = validity_mask_right_scaled[valid_rows, right_x_coords]
+        
+        # Combined validity: both left pixel and corresponding right pixel must be valid
+        combined_validity = valid_left & valid_right
+        
+        # Set invalid regions to inf in disparity map
+        disparity[~combined_validity] = np.inf
+        
+        left_invalid = np.sum(~valid_left)
+        right_invalid = np.sum(~valid_right)
+        total_invalid = np.sum(~combined_validity)
+        logging.info(f"Applied validity masks: {left_invalid} pixels invalid in left, {right_invalid} in right, {total_invalid} total invalid")
+        
+        # Save validity mask visualizations (only if verbose mode is enabled)
+        if args.verbose:
+            mask_left_vis = (valid_left * 255).astype(np.uint8)
+            mask_right_vis = (valid_right * 255).astype(np.uint8)
+            mask_combined_vis = (combined_validity * 255).astype(np.uint8)
+            
+            imageio.imwrite(str(output_dir / "validity_mask_left.png"), mask_left_vis)
+            imageio.imwrite(str(output_dir / "validity_mask_right.png"), mask_right_vis)
+            imageio.imwrite(str(output_dir / "validity_mask_combined.png"), mask_combined_vis)
+            logging.info("Saved validity mask visualizations (verbose mode)")
+        else:
+            logging.debug("Validity mask visualizations not saved (use --verbose to enable)")
+        
         # Visualize disparity
         vis = vis_disparity(disparity)
         imageio.imwrite(str(output_dir / "disparity_visualization.png"), vis)
@@ -534,6 +644,8 @@ def main():
                        help='Process a single image pair with the specified frame IDs (e.g., --pair 11 10)')
     parser.add_argument('--select_points', type=int, default=0,
                        help='Number of uniform grid points for match visualization (N×N grid, 0=disabled)')
+    parser.add_argument('--verbose', action='store_true',
+                       help='Enable verbose output and save additional debug visualizations (validity masks)')
 
     args = parser.parse_args()
     
