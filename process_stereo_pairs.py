@@ -294,8 +294,8 @@ def compute_point_cloud_from_matching_coords(
 
 def process_single_pair(
     reconstruction: ColmapReconstruction,
-    img1_id: int,
-    img2_id: int,
+    u_img1_id: int,
+    u_img2_id: int,
     output_dir: Path,
     model: Any,
     args: Any
@@ -318,8 +318,10 @@ def process_single_pair(
         images_path = output_dir.parent.parent / 'images'
 
         # Compute stereo rectification
-        rect_params = initalize_rectification(reconstruction, img1_id, img2_id, images_path, output_dir)
-        
+        rect_params = initalize_rectification(reconstruction, u_img1_id, u_img2_id, images_path, output_dir)
+        img1_id = rect_params['img1_id']
+        img2_id = rect_params['img2_id']
+
         # Convert numpy types to Python native types for JSON serialization
         rect_params_json = convert_numpy_types_for_json(rect_params)
         with open(output_dir / 'rectification.json', 'w') as f:
