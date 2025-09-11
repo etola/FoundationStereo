@@ -433,14 +433,13 @@ def visualize_matches(left_image: np.ndarray, right_image: np.ndarray,
 
 
 def compute_point_cloud_from_matching_coords(
-    left_coords: np.ndarray,
-    right_coords: np.ndarray,
     reconstruction: ColmapReconstruction,
     img1_id: int,
     img2_id: int,
-    left_image: np.ndarray,
-    right_image: np.ndarray,
-    args: Any,
+    img1_coords: np.ndarray,
+    img2_coords: np.ndarray,
+    img1_tex: np.ndarray,
+    img2_tex: np.ndarray,
     bbox_min: Optional[np.ndarray] = None,
     bbox_max: Optional[np.ndarray] = None
 ) -> o3d.geometry.PointCloud:
@@ -448,14 +447,13 @@ def compute_point_cloud_from_matching_coords(
     Compute point cloud from matching coordinates using stereo triangulation.
     
     Args:
-        left_coords: Left image coordinates (Nx2)
-        right_coords: Right image coordinates (Nx2)
+        img1_coords: Left image coordinates (Nx2)
+        img2_coords: Right image coordinates (Nx2)
         reconstruction: ColmapReconstruction object
         img1_id: First image ID
         img2_id: Second image ID
-        left_image: Left image for colors
-        right_image: Right image for colors
-        args: Arguments containing z_far and other parameters
+        img1_tex: Left image for colors
+        img2_tex: Right image for colors
         bbox_min: Optional minimum bounding box coordinates (3D)
         bbox_max: Optional maximum bounding box coordinates (3D)
         
@@ -471,8 +469,8 @@ def compute_point_cloud_from_matching_coords(
     t2 = reconstruction.get_image_cam_from_world(img2_id).translation
     
     # Convert to homogeneous coordinates
-    left_coords_hom = np.hstack([left_coords, np.ones((left_coords.shape[0], 1))])
-    right_coords_hom = np.hstack([right_coords, np.ones((right_coords.shape[0], 1))])
+    img1_coords_hom = np.hstack([img1_coords, np.ones((img1_coords.shape[0], 1))])
+    img2_coords_hom = np.hstack([img2_coords, np.ones((img2_coords.shape[0], 1))])
     
     # Create projection matrices
     P1 = K1 @ np.hstack([R1, t1.reshape(3, 1)])
@@ -480,18 +478,18 @@ def compute_point_cloud_from_matching_coords(
     
     # Vectorized triangulation using OpenCV
     # cv2.triangulatePoints expects points in shape (2, N) for each camera
-    left_points = left_coords.T.astype(np.float32)  # Shape: (2, N)
-    right_points = right_coords.T.astype(np.float32)  # Shape: (2, N)
+    img1_points = img1_coords.T.astype(np.float32)  # Shape: (2, N)
+    img2_points = img2_coords.T.astype(np.float32)  # Shape: (2, N)
     
     # Triangulate all points at once
-    points_4d = cv2.triangulatePoints(P1, P2, left_points, right_points)
+    points_4d = cv2.triangulatePoints(P1, P2, img1_points, img2_points)
     
     # Convert from homogeneous to 3D coordinates
     points_3d = points_4d[:3] / points_4d[3]  # Shape: (3, N)
     points_3d = points_3d.T  # Shape: (N, 3)
     
     # Filter points by depth bounds
-    valid_depth_mask = (points_3d[:, 2] > 0) & (points_3d[:, 2] <= args.z_far)
+    valid_depth_mask = (points_3d[:, 2] > 0)
     
     # Apply bounding box filtering if provided
     if bbox_min is not None and bbox_max is not None:
@@ -508,35 +506,30 @@ def compute_point_cloud_from_matching_coords(
         logging.info(f"Point filtering: {np.sum(valid_depth_mask)} points passed depth filter (no bbox filter)")
     
     points_3d = points_3d[combined_mask]
-    valid_left_coords = left_coords[combined_mask]
+    valid_img1_coords = img1_coords[combined_mask]
     
-    # Get colors from left image (vectorized)
-    x_coords = valid_left_coords[:, 0].astype(int)
-    y_coords = valid_left_coords[:, 1].astype(int)
+    # Get colors from img1 (vectorized)
+    x_coords = valid_img1_coords[:, 0].astype(int)
+    y_coords = valid_img1_coords[:, 1].astype(int)
     
     # Create mask for valid coordinates
     valid_coords_mask = (
-        (x_coords >= 0) & (x_coords < left_image.shape[1]) &
-        (y_coords >= 0) & (y_coords < left_image.shape[0])
+        (x_coords >= 0) & (x_coords < img1_tex.shape[1]) &
+        (y_coords >= 0) & (y_coords < img1_tex.shape[0])
     )
     
     # Initialize colors array
-    colors = np.full((len(valid_left_coords), 3), [128, 128, 128], dtype=np.uint8)
+    colors = np.full((len(valid_img1_coords), 3), [128, 128, 128], dtype=np.uint8)
     
     # Extract colors for valid coordinates
     if np.any(valid_coords_mask):
-        colors[valid_coords_mask] = left_image[y_coords[valid_coords_mask], x_coords[valid_coords_mask]]
+        colors[valid_coords_mask] = img1_tex[y_coords[valid_coords_mask], x_coords[valid_coords_mask]]
     
     if len(points_3d) == 0:
         return o3d.geometry.PointCloud()
     
     # Create point cloud
     pcd = toOpen3dCloud(points_3d, colors)
-
-    if args.denoise_cloud:
-        cl, ind = pcd.remove_radius_outlier(nb_points=args.denoise_nb_points, radius=args.denoise_radius)
-        inlier_cloud = pcd.select_by_index(ind)
-        pcd = inlier_cloud
 
     return pcd
 
@@ -666,10 +659,9 @@ def process_single_pair(
         
         # Compute point cloud
         pcd = compute_point_cloud_from_matching_coords(
-            img1_coords_orig, img2_coords_orig,
             reconstruction, img1_id, img2_id,
+            img1_coords_orig, img2_coords_orig,
             img1_orig, img2_orig,
-            args,
             bbox_min=bbox_min,
             bbox_max=bbox_max
         )
@@ -697,9 +689,6 @@ def main():
     parser.add_argument('--valid_iters', type=int, default=32, help='Number of flow-field updates during forward pass')
     parser.add_argument('--min_points', type=int, default=100, help='Minimum number of 3D points for pair selection')
     parser.add_argument('--pairs_per_image', type=int, default=1, help='Number of pairs to select per image')
-    parser.add_argument('--denoise_nb_points', type=int, default=30, help='number of points to consider for radius outlier removal')
-    parser.add_argument('--denoise_radius', type=float, default=0.03, help='radius to use for outlier removal')
-    parser.add_argument('--denoise_cloud', type=int, default=0, help='whether to denoise the point cloud')
     parser.add_argument('--pair', nargs=2, type=int, metavar=('IMG1_ID', 'IMG2_ID'), help='Process a single image pair with the specified frame IDs (e.g., --pair 11 10)')
     parser.add_argument('--select_points', type=int, default=0, help='Number of uniform grid points for match visualization (N×N grid, 0=disabled)')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output and save additional debug visualizations (validity masks)')
