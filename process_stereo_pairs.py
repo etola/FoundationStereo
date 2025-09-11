@@ -416,7 +416,9 @@ def main():
                        help='Number of pairs to select per image')
     parser.add_argument('--denoise_nb_points', type=int, default=30, help='number of points to consider for radius outlier removal')
     parser.add_argument('--denoise_radius', type=float, default=0.03, help='radius to use for outlier removal')
-    parser.add_argument('--denoise_cloud', type=int, default=1, help='whether to denoise the point cloud')
+    parser.add_argument('--denoise_cloud', type=int, default=0, help='whether to denoise the point cloud')
+    parser.add_argument('--pair', nargs=2, type=int, metavar=('IMG1_ID', 'IMG2_ID'),
+                       help='Process a single image pair with the specified frame IDs (e.g., --pair 11 10)')
 
     args = parser.parse_args()
     
@@ -446,21 +448,38 @@ def main():
     logging.info(f"Loading COLMAP reconstruction from {sparse_path}")
     reconstruction = ColmapReconstruction(str(sparse_path))
     
-    # Get best image pairs
-    logging.info("Finding best image pairs...")
-    pairs = reconstruction.get_best_pairs(
-        min_points=args.min_points,
-        pairs_per_image=args.pairs_per_image
-    )
-    
-    # Convert pairs to list of tuples
-    pair_list = []
-    for img1_id, partner_ids in pairs.items():
-        for img2_id in partner_ids:
-            if img1_id < img2_id:  # Avoid duplicates
-                pair_list.append((img1_id, img2_id))
-    
-    logging.info(f"Found {len(pair_list)} stereo pairs to process")
+    # Handle single pair processing or find best image pairs
+    if args.pair:
+        img1_id, img2_id = args.pair
+        logging.info(f"Processing single pair: {img1_id} and {img2_id}")
+        
+        # Validate that the image IDs exist in the reconstruction
+        if not reconstruction.has_image(img1_id):
+            available_ids = reconstruction.get_all_image_ids()
+            logging.error(f"Image ID {img1_id} not found in reconstruction. Available IDs: {sorted(available_ids)}")
+            sys.exit(1)
+        if not reconstruction.has_image(img2_id):
+            available_ids = reconstruction.get_all_image_ids()
+            logging.error(f"Image ID {img2_id} not found in reconstruction. Available IDs: {sorted(available_ids)}")
+            sys.exit(1)
+        
+        pair_list = [(img1_id, img2_id)]
+    else:
+        # Get best image pairs
+        logging.info("Finding best image pairs...")
+        pairs = reconstruction.get_best_pairs(
+            min_points=args.min_points,
+            pairs_per_image=args.pairs_per_image
+        )
+        
+        # Convert pairs to list of tuples
+        pair_list = []
+        for img1_id, partner_ids in pairs.items():
+            for img2_id in partner_ids:
+                if img1_id < img2_id:  # Avoid duplicates
+                    pair_list.append((img1_id, img2_id))
+        
+        logging.info(f"Found {len(pair_list)} stereo pairs to process")
     
     # Load FoundationStereo model
     logging.info(f"Loading FoundationStereo model from {args.ckpt_dir}")
@@ -488,7 +507,12 @@ def main():
         logging.info(f"\n=== Processing pair {i+1}/{len(pair_list)}: {img1_id}-{img2_id} ===")
         
         # Create pair-specific output directory
-        pair_output_dir = output_dir / f"pair_{i:02d}"
+        if args.pair:
+            # For single pair processing, use the actual frame IDs in the directory name
+            pair_output_dir = output_dir / f"pair_{img1_id}_{img2_id}"
+        else:
+            # For batch processing, use sequential numbering
+            pair_output_dir = output_dir / f"pair_{i:02d}"
         pair_output_dir.mkdir(exist_ok=True)
         
         # Process the pair
