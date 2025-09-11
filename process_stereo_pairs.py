@@ -225,7 +225,7 @@ def compute_matching_coordinates_from_disparity(
     return left_coords, right_coords, selected_coords
 
 
-def create_validity_mask_from_padding(rect_params: dict, image_shape: Tuple[int, int], image_id: int = 1) -> np.ndarray:
+def create_validity_mask_from_padding(rect_params: dict, image_shape: Tuple[int, int], image_id: int = 1, margin: int = 0) -> np.ndarray:
     """
     Create validity mask for rectified image based on padding information.
     
@@ -233,6 +233,7 @@ def create_validity_mask_from_padding(rect_params: dict, image_shape: Tuple[int,
         rect_params: Rectification parameters containing custom_padding info
         image_shape: Shape of the rectified image (H, W)
         image_id: 1 for left image, 2 for right image
+        margin: Additional pixels to invalidate around padded regions (default: 0)
         
     Returns:
         Validity mask where True=valid pixels, False=padded/invalid pixels
@@ -256,20 +257,20 @@ def create_validity_mask_from_padding(rect_params: dict, image_shape: Tuple[int,
         pad_bottom = padding_info.get('pad_bottom_2', 0)
         pad_right = padding_info.get('pad_right_2', 0)
     
-    # Mark padded regions as invalid
+    # Mark padded regions as invalid (with margin)
     if pad_top > 0:
-        mask[:pad_top, :] = False  # Top padding
+        mask[:pad_top + margin, :] = False  # Top padding + margin
     if pad_bottom > 0:
-        mask[H-pad_bottom:, :] = False  # Bottom padding
+        mask[max(0, H-pad_bottom-margin):, :] = False  # Bottom padding + margin
     if pad_right > 0:
-        mask[:, W-pad_right:] = False  # Right padding
+        mask[:, max(0, W-pad_right-margin):] = False  # Right padding + margin
     
     return mask
 
 
 def apply_validity_masks_to_disparity(disparity: np.ndarray, rect_params: dict, 
                                      left_image_shape: Tuple[int, int], right_image_shape: Tuple[int, int],
-                                     scale_factor: float = 1.0, output_dir: Path = None, verbose: bool = False) -> np.ndarray:
+                                     scale_factor: float = 1.0, output_dir: Path = None, verbose: bool = False, margin: int = 0) -> np.ndarray:
     """
     Apply validity masks to disparity map to exclude padded regions from both left and right images.
     
@@ -281,14 +282,15 @@ def apply_validity_masks_to_disparity(disparity: np.ndarray, rect_params: dict,
         scale_factor: Scale factor applied to disparity computation
         output_dir: Optional directory to save mask visualizations
         verbose: Whether to save mask visualizations
+        margin: Additional pixels to invalidate around padded regions (default: 0)
         
     Returns:
         Modified disparity map with invalid regions set to np.inf
     """
     # Apply validity masks to disparity to exclude padded regions
-    validity_mask_left = create_validity_mask_from_padding(rect_params, left_image_shape, image_id=1)
-    validity_mask_right = create_validity_mask_from_padding(rect_params, right_image_shape, image_id=2)
-    
+    validity_mask_left = create_validity_mask_from_padding(rect_params, left_image_shape, image_id=1, margin=margin)
+    validity_mask_right = create_validity_mask_from_padding(rect_params, right_image_shape, image_id=2, margin=margin)
+
     # Scale masks to match disparity resolution
     if scale_factor != 1.0:
         validity_mask_left_scaled = cv2.resize(validity_mask_left.astype(np.uint8), 
@@ -594,7 +596,7 @@ def process_single_pair(
         print("Applying validity masks to disparity...")
         disparity = apply_validity_masks_to_disparity(
             disparity, rect_params, rect1_img.shape[:2], rect2_img.shape[:2], 
-            scale_factor=args.scale, output_dir=output_dir, verbose=args.verbose
+            scale_factor=args.scale, output_dir=output_dir, verbose=args.verbose, margin=args.padding_margin
         )
         print("Applying validity masks to disparity done")
 
@@ -694,6 +696,7 @@ def main():
     parser.add_argument('--disable_bbox_filter', action='store_true', help='Disable point cloud filtering using robust bounding box from COLMAP reconstruction')
     parser.add_argument('--bbox_min_visibility', type=int, default=3, help='Minimum visibility for points used in bounding box computation (default: 3)')
     parser.add_argument('--bbox_padding', type=float, default=1.0, help='Padding factor for bounding box as fraction of size (default: 1.0)')
+    parser.add_argument('--padding_margin', type=int, default=50, help='Additional pixels to invalidate around padded regions (default: 50)')
 
     args = parser.parse_args()
     
