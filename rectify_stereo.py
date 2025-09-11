@@ -109,7 +109,6 @@ def _determine_camera_rotations(R1: np.ndarray, R2: np.ndarray, t_rel: np.ndarra
     R1_rotated = R_rotation1 @ R1
     up_vector = R1_rotated[1, :]
 
-    print(f"bef {rotation1} {rotation2}")
 
     if is_vertical:
         if np.dot(up_vector, np.array([-1, 0, 0])) > 0:
@@ -120,7 +119,6 @@ def _determine_camera_rotations(R1: np.ndarray, R2: np.ndarray, t_rel: np.ndarra
             rotation1 = (rotation1 + 180) % 360
             rotation2 = (rotation2 + 180) % 360
 
-    print(f"aft {rotation1} {rotation2}")
 
 
     return rotation1, rotation2
@@ -287,14 +285,14 @@ def _determine_image_order_by_camera_centers(C1: np.ndarray, C2: np.ndarray, img
 
     if _is_vertical_alignment(C1, C2):
         # Mostly vertical alignment - order by Y coordinate (smaller Y first)
-        print(f"  Debug: Vertical alignment detected")
+        # print(f"  Debug: Vertical alignment detected")
         if C1[1] < C2[1]:
             return img1_id, img2_id
         else:
             return img2_id, img1_id
     else:
         # Mostly horizontal alignment - order by X coordinate (smaller X first)
-        print(f"  Debug: Horizontal alignment detected")
+        # print(f"  Debug: Horizontal alignment detected")
         if C1[0] < C2[0]:
             return img2_id, img1_id
         else:
@@ -373,7 +371,7 @@ def save_rectified_intrinsics(pair_dir: Path, rect_info: dict) -> None:
 
 
 def compute_stereo_rectification(reconstruction: ColmapReconstruction, 
-                                img1_id: int, img2_id: int, images_path: Path, output_dir: Path, alpha: float = 1.0) -> Dict[str, Any]:
+                                img1_id: int, img2_id: int, images_path: Path, output_dir: Path, alpha: float = 1.0, verbose: bool = False) -> Dict[str, Any]:
     """
     Compute stereo rectification parameters for two images.
     If images are vertically aligned, applies 90-degree rotation first, then horizontal rectification.
@@ -385,6 +383,7 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
         images_path: Path to images directory
         output_dir: Output directory
         alpha: Free scaling parameter (0.0=more crop, 1.0=less crop, default: 1.0)
+        verbose: Whether to print debug information (default: False)
         
     Returns:
         Dictionary containing rectification parameters
@@ -447,39 +446,43 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     is_vertical = rotation_angle1 != 0 or rotation_angle2 != 0
     
     # Add debug output for stereo rectification
-    print(f"  Debug: Camera rotations: Image1={rotation_angle1}°, Image2={rotation_angle2}°")
-    print(f"  Debug: Stereo rectification input:")
-    print(f"    Image size (rotated): {image_size_rotated}")
-    print(f"    K1_rotated fx: {K1_rotated[0,0]:.2f}, fy: {K1_rotated[1,1]:.2f}, cx: {K1_rotated[0,2]:.2f}, cy: {K1_rotated[1,2]:.2f}")
-    print(f"    K2_rotated fx: {K2_rotated[0,0]:.2f}, fy: {K2_rotated[1,1]:.2f}, cx: {K2_rotated[0,2]:.2f}, cy: {K2_rotated[1,2]:.2f}")
-    print(f"    R_rel_rotated determinant: {np.linalg.det(R_rel_rotated):.6f}")
-    print(f"    t_rel        : [{t_rel[0]:.6f}, {t_rel[1]:.6f}, {t_rel[2]:.6f}]")
-    print(f"    t_rel_rotated: [{t_rel_rotated[0]:.6f}, {t_rel_rotated[1]:.6f}, {t_rel_rotated[2]:.6f}]")
-    print(f"    t_rel_rotated norm: {np.linalg.norm(t_rel_rotated):.6f}")
+    if verbose:
+        print(f"  Debug: Camera rotations: Image1={rotation_angle1}°, Image2={rotation_angle2}°")
+        print(f"  Debug: Stereo rectification input:")
+        print(f"    Image size (rotated): {image_size_rotated}")
+        print(f"    K1_rotated fx: {K1_rotated[0,0]:.2f}, fy: {K1_rotated[1,1]:.2f}, cx: {K1_rotated[0,2]:.2f}, cy: {K1_rotated[1,2]:.2f}")
+        print(f"    K2_rotated fx: {K2_rotated[0,0]:.2f}, fy: {K2_rotated[1,1]:.2f}, cx: {K2_rotated[0,2]:.2f}, cy: {K2_rotated[1,2]:.2f}")
+        print(f"    R_rel_rotated determinant: {np.linalg.det(R_rel_rotated):.6f}")
+        print(f"    t_rel        : [{t_rel[0]:.6f}, {t_rel[1]:.6f}, {t_rel[2]:.6f}]")
+        print(f"    t_rel_rotated: [{t_rel_rotated[0]:.6f}, {t_rel_rotated[1]:.6f}, {t_rel_rotated[2]:.6f}]")
+        print(f"    t_rel_rotated norm: {np.linalg.norm(t_rel_rotated):.6f}")
     
     # Check if the rotated translation is properly horizontal
     t_rel_rotated_norm = np.linalg.norm(t_rel_rotated)
     if t_rel_rotated_norm > 1e-6:
         t_rel_rotated_normalized = t_rel_rotated / t_rel_rotated_norm
-        print(f"    t_rel_rotated normalized: [{t_rel_rotated_normalized[0]:.6f}, {t_rel_rotated_normalized[1]:.6f}, {t_rel_rotated_normalized[2]:.6f}]")
-        print(f"    Horizontal component (X): {abs(t_rel_rotated_normalized[0]):.6f}")
-        print(f"    Vertical component (Y): {abs(t_rel_rotated_normalized[1]):.6f}")
+        if verbose:
+            print(f"    t_rel_rotated normalized: [{t_rel_rotated_normalized[0]:.6f}, {t_rel_rotated_normalized[1]:.6f}, {t_rel_rotated_normalized[2]:.6f}]")
+            print(f"    Horizontal component (X): {abs(t_rel_rotated_normalized[0]):.6f}")
+            print(f"    Vertical component (Y): {abs(t_rel_rotated_normalized[1]):.6f}")
 
     y_world = -R_rel[1, :]
     y_world_rotated = -R_rel_rotated[1, :]
-    print(f"    y_world        : [{y_world[0]:.6f}, {y_world[1]:.6f}, {y_world[2]:.6f}]")
-    print(f"    y_world_rotated: [{y_world_rotated[0]:.6f}, {y_world_rotated[1]:.6f}, {y_world_rotated[2]:.6f}]")
+    if verbose:
+        print(f"    y_world        : [{y_world[0]:.6f}, {y_world[1]:.6f}, {y_world[2]:.6f}]")
+        print(f"    y_world_rotated: [{y_world_rotated[0]:.6f}, {y_world_rotated[1]:.6f}, {y_world_rotated[2]:.6f}]")
 
 
     # Debug: Print matrices being passed to stereoRectify
-    print(f"  Debug: Matrices passed to cv2.stereoRectify:")
-    print(f"    K1_rotated:\n{K1_rotated}")
-    print(f"    K2_rotated:\n{K2_rotated}")
-    print(f"    R_rel_rotated:\n{R_rel_rotated}")
-    print(f"    t_rel_rotated: {t_rel_rotated}")
-    print(f"    image_size_rotated: {image_size_rotated}")
-    print(f"    dist1: {dist1}")
-    print(f"    dist2: {dist2}")
+    if verbose:
+        print(f"  Debug: Matrices passed to cv2.stereoRectify:")
+        print(f"    K1_rotated:\n{K1_rotated}")
+        print(f"    K2_rotated:\n{K2_rotated}")
+        print(f"    R_rel_rotated:\n{R_rel_rotated}")
+        print(f"    t_rel_rotated: {t_rel_rotated}")
+        print(f"    image_size_rotated: {image_size_rotated}")
+        print(f"    dist1: {dist1}")
+        print(f"    dist2: {dist2}")
     
     # Stereo rectification using OpenCV functions (now always horizontal)
     R1_rect, R2_rect, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
@@ -494,11 +497,12 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
     focal_lengths_valid = P1[0,0] > 0 and P1[1,1] > 0 and P2[0,0] > 0 and P2[1,1] > 0
     
     if alpha == 1.0 and (not roi1_valid or not roi2_valid or not focal_lengths_valid):
-        print(f"  Debug: Alpha=1.0 produced degenerate results - falling back to alpha=0.0")
-        print(f"    ROI validity: ROI1={roi1_valid}, ROI2={roi2_valid}")
-        print(f"    Focal length validity: {focal_lengths_valid}")
-        print(f"    Original ROI1: {roi1}, ROI2: {roi2}")
-        print(f"    Original P1 fx: {P1[0,0]:.2f}, P2 fx: {P2[0,0]:.2f}")
+        if verbose:
+            print(f"  Debug: Alpha=1.0 produced degenerate results - falling back to alpha=0.0")
+            print(f"    ROI validity: ROI1={roi1_valid}, ROI2={roi2_valid}")
+            print(f"    Focal length validity: {focal_lengths_valid}")
+            print(f"    Original ROI1: {roi1}, ROI2: {roi2}")
+            print(f"    Original P1 fx: {P1[0,0]:.2f}, P2 fx: {P2[0,0]:.2f}")
         
         # Fallback to alpha=0.0
         alpha = 0.0
@@ -506,14 +510,16 @@ def compute_stereo_rectification(reconstruction: ColmapReconstruction,
             K1_rotated, dist1, K2_rotated, dist2, image_size_rotated, R_rel_rotated, t_rel_rotated,
             flags=cv2.CALIB_ZERO_DISPARITY, alpha=alpha
         )
-        print(f"    Fallback ROI1: {roi1}, ROI2: {roi2}")
-        print(f"    Fallback P1 fx: {P1[0,0]:.2f}, P2 fx: {P2[0,0]:.2f}")
+        if verbose:
+            print(f"    Fallback ROI1: {roi1}, ROI2: {roi2}")
+            print(f"    Fallback P1 fx: {P1[0,0]:.2f}, P2 fx: {P2[0,0]:.2f}")
     
-    print(f"  Debug: Stereo rectification output:")
-    print(f"    Alpha parameter: {original_alpha} (used: {alpha})")
-    print(f"    P1 fx: {P1[0,0]:.2f}, fy: {P1[1,1]:.2f}, cx: {P1[0,2]:.2f}, cy: {P1[1,2]:.2f}")
-    print(f"    P2 fx: {P2[0,0]:.2f}, fy: {P2[1,1]:.2f}, cx: {P2[0,2]:.2f}, cy: {P2[1,2]:.2f}")
-    print(f"    ROI1: {roi1}, ROI2: {roi2}")
+    if verbose:
+        print(f"  Debug: Stereo rectification output:")
+        print(f"    Alpha parameter: {original_alpha} (used: {alpha})")
+        print(f"    P1 fx: {P1[0,0]:.2f}, fy: {P1[1,1]:.2f}, cx: {P1[0,2]:.2f}, cy: {P1[1,2]:.2f}")
+        print(f"    P2 fx: {P2[0,0]:.2f}, fy: {P2[1,1]:.2f}, cx: {P2[0,2]:.2f}, cy: {P2[1,2]:.2f}")
+        print(f"    ROI1: {roi1}, ROI2: {roi2}")
 
     img1_name = reconstruction.get_image_name(img1_id)
     img2_name = reconstruction.get_image_name(img2_id)
@@ -1580,11 +1586,11 @@ def transform_single_image_coordinates_from_rectified_vectorized(rect_params: Di
     
     return coords_orig
 
-def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, images_path: Path, output_dir: Path, alpha: float = 1.0) -> Dict[str, Any]:
+def initalize_rectification(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, images_path: Path, output_dir: Path, alpha: float = 1.0, verbose: bool = False) -> Dict[str, Any]:
     C1 = reconstruction.get_camera_center(img1_id)
     C2 = reconstruction.get_camera_center(img2_id)
     im_left, im_right = _determine_image_order_by_camera_centers(C1, C2, img1_id, img2_id)
-    return compute_stereo_rectification(reconstruction, im_left, im_right, images_path, output_dir, alpha)
+    return compute_stereo_rectification(reconstruction, im_left, im_right, images_path, output_dir, alpha, verbose)
 
 
 def process_single_pair(reconstruction: ColmapReconstruction, img1_id: int, img2_id: int, 

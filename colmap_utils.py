@@ -215,7 +215,7 @@ class ColmapReconstruction:
             'avg_track_length': avg_track_length
         }
     
-    def compute_robust_bounding_box(self, min_visibility: int = 3, padding_factor: float = 0.1) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    def compute_robust_bounding_box(self, min_visibility: int = 3, padding_factor: float = 0.1, verbose: bool = True) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Compute a robust bounding box from COLMAP 3D points with good visibility.
         Results are cached to avoid recomputation for the same parameters.
@@ -233,7 +233,7 @@ class ColmapReconstruction:
         # Return cached result if available
         if cache_key in self._bbox_cache:
             bbox_min, bbox_max = self._bbox_cache[cache_key]
-            if bbox_min is not None and bbox_max is not None:
+            if bbox_min is not None and bbox_max is not None and verbose:
                 print(f"Using cached bounding box (min_visibility={min_visibility}, padding={padding_factor})")
                 print(f"  Min: [{bbox_min[0]:.3f}, {bbox_min[1]:.3f}, {bbox_min[2]:.3f}]")
                 print(f"  Max: [{bbox_max[0]:.3f}, {bbox_max[1]:.3f}, {bbox_max[2]:.3f}]")
@@ -247,12 +247,14 @@ class ColmapReconstruction:
                 robust_points.append(point3D.xyz)
         
         if len(robust_points) == 0:
-            print(f"Warning: No points found with visibility >= {min_visibility}")
+            if verbose:
+                print(f"Warning: No points found with visibility >= {min_visibility}")
             # Fallback to all points
             robust_points = [point3D.xyz for point3D in self.reconstruction.points3D.values()]
         
         if len(robust_points) == 0:
-            print("Warning: No 3D points found in reconstruction")
+            if verbose:
+                print("Warning: No 3D points found in reconstruction")
             # Cache the failure result
             self._bbox_cache[cache_key] = (None, None)
             return None, None
@@ -272,10 +274,11 @@ class ColmapReconstruction:
         # Cache the result
         self._bbox_cache[cache_key] = (bbox_min.copy(), bbox_max.copy())
         
-        print(f"Computed robust bounding box from {len(robust_points)} points (min_visibility={min_visibility})")
-        print(f"  Min: [{bbox_min[0]:.3f}, {bbox_min[1]:.3f}, {bbox_min[2]:.3f}]")
-        print(f"  Max: [{bbox_max[0]:.3f}, {bbox_max[1]:.3f}, {bbox_max[2]:.3f}]")
-        print(f"  Size: [{bbox_size[0]:.3f}, {bbox_size[1]:.3f}, {bbox_size[2]:.3f}]")
+        if verbose:
+            print(f"Computed robust bounding box from {len(robust_points)} points (min_visibility={min_visibility})")
+            print(f"  Min: [{bbox_min[0]:.3f}, {bbox_min[1]:.3f}, {bbox_min[2]:.3f}]")
+            print(f"  Max: [{bbox_max[0]:.3f}, {bbox_max[1]:.3f}, {bbox_max[2]:.3f}]")
+            print(f"  Size: [{bbox_size[0]:.3f}, {bbox_size[1]:.3f}, {bbox_size[2]:.3f}]")
         
         return bbox_min, bbox_max
     

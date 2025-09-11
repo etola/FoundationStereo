@@ -23,7 +23,7 @@ from typing import Dict, List, Tuple, Any, Optional
 import cv2
 import torch
 import open3d as o3d
-import imageio
+import imageio.v2 as imageio
 from omegaconf import OmegaConf
 
 # Add project root to path
@@ -152,7 +152,8 @@ def remove_invisible_points(disparity: np.ndarray) -> np.ndarray:
 
 def compute_matching_coordinates_from_disparity(
     disparity: np.ndarray,
-    select_points: int = 0
+    select_points: int = 0,
+    verbose: bool = False
 ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """
     Compute matching coordinate arrays from horizontal disparity information.
@@ -193,20 +194,33 @@ def compute_matching_coordinates_from_disparity(
         y_indices = np.linspace(0, H-1, select_points, dtype=int)
         x_indices = np.linspace(0, W-1, select_points, dtype=int)
         
-        selected_coords = []
-        for y in y_indices:
-            for x in x_indices:
-                # Add random disturbance to avoid overlapping lines in visualization
-                x_disturbed = np.clip(x + np.random.randint(-10, 11), 0, W-1)
-                y_disturbed = np.clip(y + np.random.randint(-10, 11), 0, H-1)
-                
-                disp_val = disparity[y_disturbed, x_disturbed]
-                # Check if disparity is valid and right coordinate would be positive
-                if np.isfinite(disp_val) and (x_disturbed - disp_val) >= 0:
-                    selected_coords.append([x_disturbed, y_disturbed, disp_val])
+        # Vectorized coordinate selection with random disturbance
+        y_grid, x_grid = np.meshgrid(y_indices, x_indices, indexing='ij')
+        grid_coords = np.stack([x_grid.flatten(), y_grid.flatten()], axis=1)
         
-        if selected_coords:
-            selected_coords = np.array(selected_coords)
+        # Apply random disturbance to all coordinates at once
+        disturbance = np.random.randint(-10, 11, size=grid_coords.shape)
+        coords_disturbed = np.clip(grid_coords + disturbance, [0, 0], [W-1, H-1])
+        
+        # Sample disparity values for all coordinates
+        disp_vals = disparity[coords_disturbed[:, 1], coords_disturbed[:, 0]]
+        
+        # Create validity mask
+        valid_mask = (
+            np.isfinite(disp_vals) & 
+            ((coords_disturbed[:, 0] - disp_vals) >= 0)
+        )
+        
+        # Filter valid coordinates and create final array
+        if np.any(valid_mask):
+            valid_coords = coords_disturbed[valid_mask]
+            valid_disp = disp_vals[valid_mask]
+            selected_coords = np.column_stack([valid_coords, valid_disp])
+        else:
+            selected_coords = None
+
+        if verbose:
+            print(f"Selected {np.sum(valid_mask)} points")
     
     return left_coords, right_coords, selected_coords
 
@@ -253,9 +267,98 @@ def create_validity_mask_from_padding(rect_params: dict, image_shape: Tuple[int,
     return mask
 
 
+def apply_validity_masks_to_disparity(disparity: np.ndarray, rect_params: dict, 
+                                     left_image_shape: Tuple[int, int], right_image_shape: Tuple[int, int],
+                                     scale_factor: float = 1.0, output_dir: Path = None, verbose: bool = False) -> np.ndarray:
+    """
+    Apply validity masks to disparity map to exclude padded regions from both left and right images.
+    
+    Args:
+        disparity: Disparity map to apply masks to
+        rect_params: Rectification parameters containing custom_padding info
+        left_image_shape: Shape of the left rectified image (H, W)
+        right_image_shape: Shape of the right rectified image (H, W)
+        scale_factor: Scale factor applied to disparity computation
+        output_dir: Optional directory to save mask visualizations
+        verbose: Whether to save mask visualizations
+        
+    Returns:
+        Modified disparity map with invalid regions set to np.inf
+    """
+    # Apply validity masks to disparity to exclude padded regions
+    validity_mask_left = create_validity_mask_from_padding(rect_params, left_image_shape, image_id=1)
+    validity_mask_right = create_validity_mask_from_padding(rect_params, right_image_shape, image_id=2)
+    
+    # Scale masks to match disparity resolution
+    if scale_factor != 1.0:
+        validity_mask_left_scaled = cv2.resize(validity_mask_left.astype(np.uint8), 
+                                             (disparity.shape[1], disparity.shape[0]), 
+                                             interpolation=cv2.INTER_NEAREST).astype(bool)
+        validity_mask_right_scaled = cv2.resize(validity_mask_right.astype(np.uint8), 
+                                              (disparity.shape[1], disparity.shape[0]), 
+                                              interpolation=cv2.INTER_NEAREST).astype(bool)
+    else:
+        validity_mask_left_scaled = validity_mask_left
+        validity_mask_right_scaled = validity_mask_right
+    
+    # Create coordinate grids for disparity validation
+    H, W = disparity.shape
+    yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+    
+    # Calculate corresponding right image coordinates
+    right_x = xx - disparity
+    
+    # Check validity for both left and right image positions
+    valid_left = validity_mask_left_scaled  # Left image validity
+    
+    # Vectorized validity check for right image
+    # Create valid mask for finite disparity values and in-bounds coordinates
+    finite_disparity = np.isfinite(disparity)
+    in_bounds = (right_x >= 0) & (right_x < W)
+    
+    # Initialize right validity mask
+    valid_right = np.zeros_like(validity_mask_left_scaled, dtype=bool)
+    
+    # For valid coordinates, sample from right validity mask
+    valid_coords = finite_disparity & in_bounds
+    if np.any(valid_coords):
+        # Get row and column indices for valid coordinates
+        valid_rows, valid_cols = np.where(valid_coords)
+        right_x_coords = right_x[valid_coords].astype(int)
+        
+        # Sample right validity mask at corresponding coordinates
+        valid_right[valid_rows, valid_cols] = validity_mask_right_scaled[valid_rows, right_x_coords]
+    
+    # Combined validity: both left pixel and corresponding right pixel must be valid
+    combined_validity = valid_left & valid_right
+    
+    # Set invalid regions to inf in disparity map
+    disparity[~combined_validity] = np.inf
+
+    left_invalid = np.sum(~valid_left)
+    right_invalid = np.sum(~valid_right)
+    total_invalid = np.sum(~combined_validity)
+    logging.info(f"Applied validity masks: {left_invalid} pixels invalid in left, {right_invalid} in right, {total_invalid} total invalid")
+    
+    # Save validity mask visualizations (only if verbose mode is enabled)
+    if verbose and output_dir is not None:
+        mask_left_vis = (valid_left * 255).astype(np.uint8)
+        mask_right_vis = (valid_right * 255).astype(np.uint8)
+        mask_combined_vis = (combined_validity * 255).astype(np.uint8)
+        
+        imageio.imwrite(str(output_dir / "validity_mask_left.png"), mask_left_vis)
+        imageio.imwrite(str(output_dir / "validity_mask_right.png"), mask_right_vis)
+        imageio.imwrite(str(output_dir / "validity_mask_combined.png"), mask_combined_vis)
+        logging.info("Saved validity mask visualizations (verbose mode)")
+    elif not verbose:
+        logging.debug("Validity mask visualizations not saved (use --verbose to enable)")
+    
+    return disparity
+
+
 def visualize_matches(left_image: np.ndarray, right_image: np.ndarray, 
                      left_coords: np.ndarray, right_coords: np.ndarray,
-                     max_matches: int = 50) -> np.ndarray:
+                     max_matches: int = 1000) -> np.ndarray:
     """
     Visualize matching points between two images by concatenating them and drawing lines.
     
@@ -332,12 +435,9 @@ def visualize_matches(left_image: np.ndarray, right_image: np.ndarray,
 def compute_point_cloud_from_matching_coords(
     left_coords: np.ndarray,
     right_coords: np.ndarray,
-    K1: np.ndarray,
-    K2: np.ndarray,
-    R1: np.ndarray,
-    R2: np.ndarray,
-    t1: np.ndarray,
-    t2: np.ndarray,
+    reconstruction: ColmapReconstruction,
+    img1_id: int,
+    img2_id: int,
     left_image: np.ndarray,
     right_image: np.ndarray,
     args: Any,
@@ -350,9 +450,9 @@ def compute_point_cloud_from_matching_coords(
     Args:
         left_coords: Left image coordinates (Nx2)
         right_coords: Right image coordinates (Nx2)
-        K1, K2: Camera intrinsic matrices
-        R1, R2: Camera rotation matrices
-        t1, t2: Camera translation vectors
+        reconstruction: ColmapReconstruction object
+        img1_id: First image ID
+        img2_id: Second image ID
         left_image: Left image for colors
         right_image: Right image for colors
         args: Arguments containing z_far and other parameters
@@ -362,6 +462,14 @@ def compute_point_cloud_from_matching_coords(
     Returns:
         Open3D point cloud
     """
+    # Get camera parameters for triangulation
+    K1 = reconstruction.get_camera_calibration_matrix(img1_id)
+    K2 = reconstruction.get_camera_calibration_matrix(img2_id)
+    R1 = reconstruction.get_image_cam_from_world(img1_id).rotation.matrix()
+    t1 = reconstruction.get_image_cam_from_world(img1_id).translation
+    R2 = reconstruction.get_image_cam_from_world(img2_id).rotation.matrix()
+    t2 = reconstruction.get_image_cam_from_world(img2_id).translation
+    
     # Convert to homogeneous coordinates
     left_coords_hom = np.hstack([left_coords, np.ones((left_coords.shape[0], 1))])
     right_coords_hom = np.hstack([right_coords, np.ones((right_coords.shape[0], 1))])
@@ -463,7 +571,7 @@ def process_single_pair(
         images_path = output_dir.parent.parent / 'images'
 
         # Compute stereo rectification
-        rect_params = initalize_rectification(reconstruction, u_img1_id, u_img2_id, images_path, output_dir)
+        rect_params = initalize_rectification(reconstruction, u_img1_id, u_img2_id, images_path, output_dir, verbose=args.verbose)
         img1_id = rect_params['img1_id']
         img2_id = rect_params['img2_id']
         save_rectified_intrinsics(output_dir, rect_params)
@@ -472,97 +580,40 @@ def process_single_pair(
         logging.info(f"Processing pair: {rect_params['img1_name']} (ID: {img1_id}) and {rect_params['img2_name']} (ID: {img2_id})")
 
         # Rectify images
+        print("Rectifying images...")
         rect1_img, rect2_img = rectify_images(rect_params)
 
         left_img_path = output_dir / 'left.jpg'
         right_img_path = output_dir / 'right.jpg'
         imageio.imwrite(str(left_img_path), rect1_img)
         imageio.imwrite(str(right_img_path), rect2_img)
+        print("Rectifying images done")
 
 
+        print("Disparity computation...")
         # Process with FoundationStereo (returns disparity at scaled resolution)
         disparity = process_stereo_pair_with_foundation_stereo(
             rect1_img, rect2_img, model, args
         )
-        
-        # Apply validity masks to disparity to exclude padded regions
-        validity_mask_left = create_validity_mask_from_padding(rect_params, rect1_img.shape[:2], image_id=1)
-        validity_mask_right = create_validity_mask_from_padding(rect_params, rect2_img.shape[:2], image_id=2)
-        
-        # Scale masks to match disparity resolution
-        if args.scale != 1.0:
-            validity_mask_left_scaled = cv2.resize(validity_mask_left.astype(np.uint8), 
-                                                 (disparity.shape[1], disparity.shape[0]), 
-                                                 interpolation=cv2.INTER_NEAREST).astype(bool)
-            validity_mask_right_scaled = cv2.resize(validity_mask_right.astype(np.uint8), 
-                                                  (disparity.shape[1], disparity.shape[0]), 
-                                                  interpolation=cv2.INTER_NEAREST).astype(bool)
-        else:
-            validity_mask_left_scaled = validity_mask_left
-            validity_mask_right_scaled = validity_mask_right
-        
-        # Create coordinate grids for disparity validation
-        H, W = disparity.shape
-        yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
-        
-        # Calculate corresponding right image coordinates
-        right_x = xx - disparity
-        
-        # Check validity for both left and right image positions
-        valid_left = validity_mask_left_scaled  # Left image validity
-        
-        # Vectorized validity check for right image
-        # Create valid mask for finite disparity values and in-bounds coordinates
-        finite_disparity = np.isfinite(disparity)
-        in_bounds = (right_x >= 0) & (right_x < W)
-        
-        # Initialize right validity mask
-        valid_right = np.zeros_like(validity_mask_left_scaled, dtype=bool)
-        
-        # For valid coordinates, sample from right validity mask
-        valid_coords = finite_disparity & in_bounds
-        if np.any(valid_coords):
-            # Get row and column indices for valid coordinates
-            valid_rows, valid_cols = np.where(valid_coords)
-            right_x_coords = right_x[valid_coords].astype(int)
-            
-            # Sample right validity mask at corresponding coordinates
-            valid_right[valid_rows, valid_cols] = validity_mask_right_scaled[valid_rows, right_x_coords]
-        
-        # Combined validity: both left pixel and corresponding right pixel must be valid
-        combined_validity = valid_left & valid_right
-        
-        # Set invalid regions to inf in disparity map
-        disparity[~combined_validity] = np.inf
-        
-        left_invalid = np.sum(~valid_left)
-        right_invalid = np.sum(~valid_right)
-        total_invalid = np.sum(~combined_validity)
-        logging.info(f"Applied validity masks: {left_invalid} pixels invalid in left, {right_invalid} in right, {total_invalid} total invalid")
-        
-        # Save validity mask visualizations (only if verbose mode is enabled)
-        if args.verbose:
-            mask_left_vis = (valid_left * 255).astype(np.uint8)
-            mask_right_vis = (valid_right * 255).astype(np.uint8)
-            mask_combined_vis = (combined_validity * 255).astype(np.uint8)
-            
-            imageio.imwrite(str(output_dir / "validity_mask_left.png"), mask_left_vis)
-            imageio.imwrite(str(output_dir / "validity_mask_right.png"), mask_right_vis)
-            imageio.imwrite(str(output_dir / "validity_mask_combined.png"), mask_combined_vis)
-            logging.info("Saved validity mask visualizations (verbose mode)")
-        else:
-            logging.debug("Validity mask visualizations not saved (use --verbose to enable)")
-        
+        print("Disparity computation done")
+
+
+        print("Applying validity masks to disparity...")
+        disparity = apply_validity_masks_to_disparity(
+            disparity, rect_params, rect1_img.shape[:2], rect2_img.shape[:2], 
+            scale_factor=args.scale, output_dir=output_dir, verbose=args.verbose
+        )
+        print("Applying validity masks to disparity done")
+
+
         # Visualize disparity
         vis = vis_disparity(disparity)
         imageio.imwrite(str(output_dir / "disparity_visualization.png"), vis)
 
-        # Remove invisible points
-        # disparity_horizontal = remove_invisible_points(disparity_horizontal)
         
         # Compute matching coordinates from disparity (at scaled resolution)
         img1_coords, img2_coords, selected_coords = compute_matching_coordinates_from_disparity(
-            disparity, select_points=args.select_points
+            disparity, select_points=args.select_points, verbose=args.verbose
         )
         
         # Scale coordinates up to rectified image resolution
@@ -592,13 +643,6 @@ def process_single_pair(
             rect_params, img1_coords_rect, img2_coords_rect
         )
         
-        # Get camera parameters for triangulation
-        K1 = reconstruction.get_camera_calibration_matrix(img1_id)
-        K2 = reconstruction.get_camera_calibration_matrix(img2_id)
-        R1 = reconstruction.get_image_cam_from_world(img1_id).rotation.matrix()
-        t1 = reconstruction.get_image_cam_from_world(img1_id).translation
-        R2 = reconstruction.get_image_cam_from_world(img2_id).rotation.matrix()
-        t2 = reconstruction.get_image_cam_from_world(img2_id).translation
         
         # Load original images for colors
         img1_orig = imageio.imread(rect_params['img1_path'])
@@ -623,7 +667,7 @@ def process_single_pair(
         # Compute point cloud
         pcd = compute_point_cloud_from_matching_coords(
             img1_coords_orig, img2_coords_orig,
-            K1, K2, R1, R2, t1, t2,
+            reconstruction, img1_id, img2_id,
             img1_orig, img2_orig,
             args,
             bbox_min=bbox_min,
@@ -644,40 +688,24 @@ def process_single_pair(
 
 def main():
     parser = argparse.ArgumentParser(description='Process stereo pairs from COLMAP reconstructions')
-    parser.add_argument('-s', '--scene_folder', required=True,
-                       help='Path to scene folder containing sparse/ and images/')
-    parser.add_argument('-o', '--output_folder', required=True,
-                       help='Output folder name (will be created under scene_folder)')
-    parser.add_argument('--scale', default=0.25, type=float,
-                       help='Scale factor for image processing (default: 0.25)')
-    parser.add_argument('--ckpt_dir', 
-                       default=f'{code_dir}/pretrained_models/23-51-11/model_best_bp2.pth',
-                       type=str, help='Pretrained model path')
-    parser.add_argument('--hiera', default=0, type=int,
-                       help='Hierarchical inference (only needed for high-resolution images (>1K))')
-    parser.add_argument('--z_far', default=100, type=float,
-                       help='Maximum depth to clip in point cloud')
-    parser.add_argument('--valid_iters', type=int, default=32,
-                       help='Number of flow-field updates during forward pass')
-    parser.add_argument('--min_points', type=int, default=100,
-                       help='Minimum number of 3D points for pair selection')
-    parser.add_argument('--pairs_per_image', type=int, default=1,
-                       help='Number of pairs to select per image')
+    parser.add_argument('-s', '--scene_folder', required=True, help='Path to scene folder containing sparse/ and images/')
+    parser.add_argument('-o', '--output_folder', required=True, help='Output folder name (will be created under scene_folder)')
+    parser.add_argument('--scale', default=0.25, type=float, help='Scale factor for image processing (default: 0.25)')
+    parser.add_argument('--ckpt_dir', default=f'{code_dir}/pretrained_models/23-51-11/model_best_bp2.pth', type=str, help='Pretrained model path')
+    parser.add_argument('--hiera', default=0, type=int, help='Hierarchical inference (only needed for high-resolution images (>1K))')
+    parser.add_argument('--z_far', default=100, type=float, help='Maximum depth to clip in point cloud')
+    parser.add_argument('--valid_iters', type=int, default=32, help='Number of flow-field updates during forward pass')
+    parser.add_argument('--min_points', type=int, default=100, help='Minimum number of 3D points for pair selection')
+    parser.add_argument('--pairs_per_image', type=int, default=1, help='Number of pairs to select per image')
     parser.add_argument('--denoise_nb_points', type=int, default=30, help='number of points to consider for radius outlier removal')
     parser.add_argument('--denoise_radius', type=float, default=0.03, help='radius to use for outlier removal')
     parser.add_argument('--denoise_cloud', type=int, default=0, help='whether to denoise the point cloud')
-    parser.add_argument('--pair', nargs=2, type=int, metavar=('IMG1_ID', 'IMG2_ID'),
-                       help='Process a single image pair with the specified frame IDs (e.g., --pair 11 10)')
-    parser.add_argument('--select_points', type=int, default=0,
-                       help='Number of uniform grid points for match visualization (N×N grid, 0=disabled)')
-    parser.add_argument('--verbose', action='store_true',
-                       help='Enable verbose output and save additional debug visualizations (validity masks)')
-    parser.add_argument('--disable_bbox_filter', action='store_true',
-                       help='Disable point cloud filtering using robust bounding box from COLMAP reconstruction')
-    parser.add_argument('--bbox_min_visibility', type=int, default=3,
-                       help='Minimum visibility for points used in bounding box computation (default: 3)')
-    parser.add_argument('--bbox_padding', type=float, default=0.1,
-                       help='Padding factor for bounding box as fraction of size (default: 0.1)')
+    parser.add_argument('--pair', nargs=2, type=int, metavar=('IMG1_ID', 'IMG2_ID'), help='Process a single image pair with the specified frame IDs (e.g., --pair 11 10)')
+    parser.add_argument('--select_points', type=int, default=0, help='Number of uniform grid points for match visualization (N×N grid, 0=disabled)')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose output and save additional debug visualizations (validity masks)')
+    parser.add_argument('--disable_bbox_filter', action='store_true', help='Disable point cloud filtering using robust bounding box from COLMAP reconstruction')
+    parser.add_argument('--bbox_min_visibility', type=int, default=3, help='Minimum visibility for points used in bounding box computation (default: 3)')
+    parser.add_argument('--bbox_padding', type=float, default=0.1, help='Padding factor for bounding box as fraction of size (default: 0.1)')
 
     args = parser.parse_args()
     
@@ -766,7 +794,8 @@ def main():
         logging.info("Computing robust bounding box for point cloud filtering...")
         bbox_min, bbox_max = reconstruction.compute_robust_bounding_box(
             min_visibility=args.bbox_min_visibility,
-            padding_factor=args.bbox_padding
+            padding_factor=args.bbox_padding,
+            verbose=args.verbose
         )
         if bbox_min is None or bbox_max is None:
             logging.warning("Failed to compute bounding box, proceeding without bbox filtering")
