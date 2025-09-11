@@ -340,7 +340,9 @@ def compute_point_cloud_from_matching_coords(
     t2: np.ndarray,
     left_image: np.ndarray,
     right_image: np.ndarray,
-    args: Any
+    args: Any,
+    bbox_min: Optional[np.ndarray] = None,
+    bbox_max: Optional[np.ndarray] = None
 ) -> o3d.geometry.PointCloud:
     """
     Compute point cloud from matching coordinates using stereo triangulation.
@@ -353,7 +355,9 @@ def compute_point_cloud_from_matching_coords(
         t1, t2: Camera translation vectors
         left_image: Left image for colors
         right_image: Right image for colors
-        z_far: Maximum depth to keep
+        args: Arguments containing z_far and other parameters
+        bbox_min: Optional minimum bounding box coordinates (3D)
+        bbox_max: Optional maximum bounding box coordinates (3D)
         
     Returns:
         Open3D point cloud
@@ -380,8 +384,23 @@ def compute_point_cloud_from_matching_coords(
     
     # Filter points by depth bounds
     valid_depth_mask = (points_3d[:, 2] > 0) & (points_3d[:, 2] <= args.z_far)
-    points_3d = points_3d[valid_depth_mask]
-    valid_left_coords = left_coords[valid_depth_mask]
+    
+    # Apply bounding box filtering if provided
+    if bbox_min is not None and bbox_max is not None:
+        bbox_mask = (
+            (points_3d[:, 0] >= bbox_min[0]) & (points_3d[:, 0] <= bbox_max[0]) &
+            (points_3d[:, 1] >= bbox_min[1]) & (points_3d[:, 1] <= bbox_max[1]) &
+            (points_3d[:, 2] >= bbox_min[2]) & (points_3d[:, 2] <= bbox_max[2])
+        )
+        combined_mask = valid_depth_mask & bbox_mask
+        logging.info(f"Point filtering: {np.sum(valid_depth_mask)} points passed depth filter, "
+                    f"{np.sum(bbox_mask)} passed bbox filter, {np.sum(combined_mask)} passed both")
+    else:
+        combined_mask = valid_depth_mask
+        logging.info(f"Point filtering: {np.sum(valid_depth_mask)} points passed depth filter (no bbox filter)")
+    
+    points_3d = points_3d[combined_mask]
+    valid_left_coords = left_coords[combined_mask]
     
     # Get colors from left image (vectorized)
     x_coords = valid_left_coords[:, 0].astype(int)
@@ -420,7 +439,9 @@ def process_single_pair(
     u_img2_id: int,
     output_dir: Path,
     model: Any,
-    args: Any
+    args: Any,
+    bbox_min: Optional[np.ndarray] = None,
+    bbox_max: Optional[np.ndarray] = None
 ) -> bool:
     """
     Process a single stereo pair.
@@ -432,6 +453,8 @@ def process_single_pair(
         output_dir: Output directory for this pair
         model: FoundationStereo model
         args: Command line arguments
+        bbox_min: Optional minimum bounding box coordinates (3D)
+        bbox_max: Optional maximum bounding box coordinates (3D)
         
     Returns:
         True if successful, False otherwise
@@ -596,12 +619,15 @@ def process_single_pair(
             imageio.imwrite(str(output_dir / "original_matches.png"), orig_match_vis)
             logging.info(f"Original matches visualization saved with {len(selected_coords)} points")
         
+        
         # Compute point cloud
         pcd = compute_point_cloud_from_matching_coords(
             img1_coords_orig, img2_coords_orig,
             K1, K2, R1, R2, t1, t2,
             img1_orig, img2_orig,
-            args
+            args,
+            bbox_min=bbox_min,
+            bbox_max=bbox_max
         )
         
         # Save point cloud
@@ -646,6 +672,12 @@ def main():
                        help='Number of uniform grid points for match visualization (N×N grid, 0=disabled)')
     parser.add_argument('--verbose', action='store_true',
                        help='Enable verbose output and save additional debug visualizations (validity masks)')
+    parser.add_argument('--disable_bbox_filter', action='store_true',
+                       help='Disable point cloud filtering using robust bounding box from COLMAP reconstruction')
+    parser.add_argument('--bbox_min_visibility', type=int, default=3,
+                       help='Minimum visibility for points used in bounding box computation (default: 3)')
+    parser.add_argument('--bbox_padding', type=float, default=0.1,
+                       help='Padding factor for bounding box as fraction of size (default: 0.1)')
 
     args = parser.parse_args()
     
@@ -728,6 +760,20 @@ def main():
     output_dir = scene_folder / args.output_folder
     output_dir.mkdir(exist_ok=True)
     
+    # Compute bounding box once if filtering is enabled (default: enabled)
+    bbox_min, bbox_max = None, None
+    if not args.disable_bbox_filter:
+        logging.info("Computing robust bounding box for point cloud filtering...")
+        bbox_min, bbox_max = reconstruction.compute_robust_bounding_box(
+            min_visibility=args.bbox_min_visibility,
+            padding_factor=args.bbox_padding
+        )
+        if bbox_min is None or bbox_max is None:
+            logging.warning("Failed to compute bounding box, proceeding without bbox filtering")
+            bbox_min, bbox_max = None, None
+    else:
+        logging.info("Bounding box filtering disabled by user")
+    
     # Process each pair
     successful_pairs = 0
     for i, (img1_id, img2_id) in enumerate(pair_list):
@@ -744,7 +790,8 @@ def main():
         
         # Process the pair
         success = process_single_pair(
-            reconstruction, img1_id, img2_id, pair_output_dir, model, args
+            reconstruction, img1_id, img2_id, pair_output_dir, model, args,
+            bbox_min=bbox_min, bbox_max=bbox_max
         )
         
         if success:
