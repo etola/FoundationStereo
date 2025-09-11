@@ -746,7 +746,7 @@ def rectify_images(rect_params: Dict[str, Any], debug_output_dir: Path = None) -
     # Check if rotation is needed for each image individually
     rotation_angle1 = rect_params.get('rotation_angle1', 0)
     rotation_angle2 = rect_params.get('rotation_angle2', 0)
-    print(f"  Debug: Applying rotations - Image1: {rotation_angle1}°, Image2: {rotation_angle2}°")
+    # print(f"  Debug: Applying rotations - Image1: {rotation_angle1}°, Image2: {rotation_angle2}°")
     
     def apply_rotation(img, angle):
         if angle == 90:

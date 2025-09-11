@@ -685,7 +685,6 @@ def main():
     parser.add_argument('--scale', default=0.25, type=float, help='Scale factor for image processing (default: 0.25)')
     parser.add_argument('--ckpt_dir', default=f'{code_dir}/pretrained_models/23-51-11/model_best_bp2.pth', type=str, help='Pretrained model path')
     parser.add_argument('--hiera', default=0, type=int, help='Hierarchical inference (only needed for high-resolution images (>1K))')
-    parser.add_argument('--z_far', default=100, type=float, help='Maximum depth to clip in point cloud')
     parser.add_argument('--valid_iters', type=int, default=32, help='Number of flow-field updates during forward pass')
     parser.add_argument('--min_points', type=int, default=100, help='Minimum number of 3D points for pair selection')
     parser.add_argument('--pairs_per_image', type=int, default=1, help='Number of pairs to select per image')
@@ -694,7 +693,7 @@ def main():
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output and save additional debug visualizations (validity masks)')
     parser.add_argument('--disable_bbox_filter', action='store_true', help='Disable point cloud filtering using robust bounding box from COLMAP reconstruction')
     parser.add_argument('--bbox_min_visibility', type=int, default=3, help='Minimum visibility for points used in bounding box computation (default: 3)')
-    parser.add_argument('--bbox_padding', type=float, default=0.1, help='Padding factor for bounding box as fraction of size (default: 0.1)')
+    parser.add_argument('--bbox_padding', type=float, default=1.0, help='Padding factor for bounding box as fraction of size (default: 1.0)')
 
     args = parser.parse_args()
     
