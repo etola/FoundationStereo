@@ -19,10 +19,11 @@ import json
 import logging
 from pathlib import Path
 import numpy as np
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 import cv2
 import torch
 import open3d as o3d
+import imageio
 from omegaconf import OmegaConf
 
 # Add project root to path
@@ -150,17 +151,22 @@ def remove_invisible_points(disparity: np.ndarray) -> np.ndarray:
 
 
 def compute_matching_coordinates_from_disparity(
-    disparity: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
+    disparity: np.ndarray,
+    select_points: int = 0
+) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """
     Compute matching coordinate arrays from horizontal disparity information.
     For horizontal rectification: right_x = left_x - disparity
     
     Args:
         disparity: Disparity map (at scaled resolution)
+        select_points: If > 0, perform N×N uniform sampling where N = select_points
         
     Returns:
-        Tuple of (left_coords, right_coords) where each is Nx2 array (at scaled resolution)
+        Tuple of (left_coords, right_coords, selected_coord_tuple) where:
+        - left_coords: Nx2 array of left image coordinates (at scaled resolution)
+        - right_coords: Nx2 array of right image coordinates (at scaled resolution)  
+        - selected_coord_tuple: Mx3 array of (x, y, disparity) for uniformly selected points, or None
     """
     H, W = disparity.shape
     
@@ -180,7 +186,105 @@ def compute_matching_coordinates_from_disparity(
     left_coords = left_coords[valid_mask]
     right_coords = right_coords[valid_mask]
     
-    return left_coords, right_coords
+    # Uniform N×N point selection if requested
+    selected_coords = None
+    if select_points > 0:
+        # Create uniform grid of sample points
+        y_indices = np.linspace(0, H-1, select_points, dtype=int)
+        x_indices = np.linspace(0, W-1, select_points, dtype=int)
+        
+        selected_coords = []
+        for y in y_indices:
+            for x in x_indices:
+                # Add random disturbance to avoid overlapping lines in visualization
+                x_disturbed = np.clip(x + np.random.randint(-10, 11), 0, W-1)
+                y_disturbed = np.clip(y + np.random.randint(-10, 11), 0, H-1)
+                
+                disp_val = disparity[y_disturbed, x_disturbed]
+                # Check if disparity is valid and right coordinate would be positive
+                if np.isfinite(disp_val) and (x_disturbed - disp_val) >= 0:
+                    selected_coords.append([x_disturbed, y_disturbed, disp_val])
+        
+        if selected_coords:
+            selected_coords = np.array(selected_coords)
+    
+    return left_coords, right_coords, selected_coords
+
+
+def visualize_matches(left_image: np.ndarray, right_image: np.ndarray, 
+                     left_coords: np.ndarray, right_coords: np.ndarray,
+                     max_matches: int = 50) -> np.ndarray:
+    """
+    Visualize matching points between two images by concatenating them and drawing lines.
+    
+    Args:
+        left_image: Left image as numpy array (H, W, 3)
+        right_image: Right image as numpy array (H, W, 3)
+        left_coords: Left image coordinates as Nx2 array [x, y]
+        right_coords: Right image coordinates as Nx2 array [x, y]
+        max_matches: Maximum number of matches to draw (for visual clarity)
+        
+    Returns:
+        Visualization image with both images concatenated and matches drawn
+    """
+    # Ensure images have same height for concatenation
+    h1, w1 = left_image.shape[:2]
+    h2, w2 = right_image.shape[:2]
+    
+    if h1 != h2:
+        # Resize to same height
+        target_height = max(h1, h2)
+        if h1 != target_height:
+            left_image = cv2.resize(left_image, (int(w1 * target_height / h1), target_height))
+        if h2 != target_height:
+            right_image = cv2.resize(right_image, (int(w2 * target_height / h2), target_height))
+        
+        # Update dimensions
+        h1, w1 = left_image.shape[:2]
+        h2, w2 = right_image.shape[:2]
+    
+    # Concatenate images horizontally
+    concat_image = np.hstack([left_image, right_image])
+    
+    # Limit number of matches for visual clarity
+    num_matches = min(len(left_coords), len(right_coords), max_matches)
+    if num_matches == 0:
+        return concat_image
+    
+    # Sample matches uniformly if we have more than max_matches
+    if len(left_coords) > max_matches:
+        indices = np.linspace(0, len(left_coords) - 1, max_matches, dtype=int)
+        left_coords_vis = left_coords[indices]
+        right_coords_vis = right_coords[indices]
+    else:
+        left_coords_vis = left_coords
+        right_coords_vis = right_coords
+    
+    # Draw matches
+    colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+    
+    for i, (left_pt, right_pt) in enumerate(zip(left_coords_vis, right_coords_vis)):
+        # Convert to integers
+        left_x, left_y = int(left_pt[0]), int(left_pt[1])
+        right_x, right_y = int(right_pt[0]), int(right_pt[1])
+        
+        # Offset right coordinates by left image width
+        right_x_offset = right_x + w1
+        
+        # Check bounds
+        if (0 <= left_x < w1 and 0 <= left_y < h1 and 
+            0 <= right_x < w2 and 0 <= right_y < h2):
+            
+            color = colors[i % len(colors)]
+            
+            # Draw circles on keypoints
+            cv2.circle(concat_image, (left_x, left_y), 10, color, -1)
+            cv2.circle(concat_image, (right_x_offset, right_y), 10, color, -1)
+            
+            # Draw line connecting the matches
+            cv2.line(concat_image, (left_x, left_y), (right_x_offset, right_y), color, 5)
+    
+    return concat_image
 
 
 def compute_point_cloud_from_matching_coords(
@@ -324,12 +428,31 @@ def process_single_pair(
         # disparity_horizontal = remove_invisible_points(disparity_horizontal)
         
         # Compute matching coordinates from disparity (at scaled resolution)
-        img1_coords, img2_coords = compute_matching_coordinates_from_disparity(disparity)
+        img1_coords, img2_coords, selected_coords = compute_matching_coordinates_from_disparity(
+            disparity, select_points=args.select_points
+        )
         
         # Scale coordinates up to rectified image resolution
         scale = args.scale
         img1_coords_rect = img1_coords / scale
         img2_coords_rect = img2_coords / scale
+        
+        # Visualize matches on rectified images if uniform sampling was used
+        if selected_coords is not None and len(selected_coords) > 0:
+            # Generate matching coordinates for selected points in rectified space
+            selected_left_coords = selected_coords[:, :2] / scale  # [x, y] scaled to rect resolution
+            selected_right_coords = np.column_stack([
+                selected_coords[:, 0] / scale - selected_coords[:, 2] / scale,  # x - disparity, scaled
+                selected_coords[:, 1] / scale  # y, scaled
+            ])
+            
+            # Create rectified match visualization
+            rect_match_vis = visualize_matches(
+                rect1_img, rect2_img, 
+                selected_left_coords, selected_right_coords
+            )
+            imageio.imwrite(str(output_dir / "rectified_matches.png"), rect_match_vis)
+            logging.info(f"Rectified matches visualization saved with {len(selected_coords)} points")
         
         # Transform coordinates back to original image space
         img1_coords_orig, img2_coords_orig = transform_coordinates_from_rectified_vectorized(
@@ -347,6 +470,21 @@ def process_single_pair(
         # Load original images for colors
         img1_orig = imageio.imread(rect_params['img1_path'])
         img2_orig = imageio.imread(rect_params['img2_path'])
+        
+        # Visualize matches on original images if uniform sampling was used
+        if selected_coords is not None and len(selected_coords) > 0:
+            # Transform selected coordinates to original image space
+            selected_img1_coords_orig, selected_img2_coords_orig = transform_coordinates_from_rectified_vectorized(
+                rect_params, selected_left_coords, selected_right_coords
+            )
+            
+            # Create original match visualization
+            orig_match_vis = visualize_matches(
+                img1_orig, img2_orig,
+                selected_img1_coords_orig, selected_img2_coords_orig
+            )
+            imageio.imwrite(str(output_dir / "original_matches.png"), orig_match_vis)
+            logging.info(f"Original matches visualization saved with {len(selected_coords)} points")
         
         # Compute point cloud
         pcd = compute_point_cloud_from_matching_coords(
@@ -394,6 +532,8 @@ def main():
     parser.add_argument('--denoise_cloud', type=int, default=0, help='whether to denoise the point cloud')
     parser.add_argument('--pair', nargs=2, type=int, metavar=('IMG1_ID', 'IMG2_ID'),
                        help='Process a single image pair with the specified frame IDs (e.g., --pair 11 10)')
+    parser.add_argument('--select_points', type=int, default=0,
+                       help='Number of uniform grid points for match visualization (N×N grid, 0=disabled)')
 
     args = parser.parse_args()
     
